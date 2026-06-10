@@ -1,5 +1,0 @@
-ALTER TABLE journey_email_templates
-  ADD COLUMN IF NOT EXISTS preheader TEXT,
-  ADD COLUMN IF NOT EXISTS sms_use_email_body BOOLEAN NOT NULL DEFAULT true,
-  ADD COLUMN IF NOT EXISTS sms_body TEXT,
-  ADD COLUMN IF NOT EXISTS sms_opt_out TEXT;
