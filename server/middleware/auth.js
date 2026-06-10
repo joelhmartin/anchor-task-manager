@@ -15,6 +15,26 @@
 import { query } from '../db.js';
 import { getEffectiveRole } from '../utils/roles.js';
 import { verifyAccessToken } from '../services/security/index.js';
+import { fetchUserProfile, isMainAppConfigured } from '../services/mainApp.js';
+
+// Backfill a JIT-provisioned user's name/email from the main app (best effort).
+async function enrichUserFromMainApp(userId) {
+  if (!isMainAppConfigured()) return;
+  try {
+    const profile = await fetchUserProfile(userId);
+    if (!profile) return;
+    await query(
+      `UPDATE users
+          SET first_name = COALESCE(NULLIF($2, ''), first_name),
+              last_name  = COALESCE(NULLIF($3, ''), last_name),
+              email      = COALESCE($4, email)
+        WHERE id = $1`,
+      [userId, profile.first_name, profile.last_name, profile.email]
+    );
+  } catch (err) {
+    console.error('[auth] main-app enrichment failed', err?.message || err);
+  }
+}
 
 const USER_COLUMNS = 'id, first_name, last_name, email, role, created_at, avatar_url';
 
@@ -36,6 +56,8 @@ async function resolveUser(payload) {
      RETURNING ${USER_COLUMNS}`,
     [payload.userId, placeholderEmail, payload.role || 'team']
   );
+  // Best-effort: backfill real name/email from the main app (non-blocking).
+  enrichUserFromMainApp(payload.userId).catch(() => {});
   return inserted.rows[0];
 }
 
