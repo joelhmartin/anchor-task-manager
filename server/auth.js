@@ -69,7 +69,11 @@ router.post('/refresh', async (req, res) => {
     effectiveRole: payload.effectiveRole
   });
   res.cookie('session', accessToken, cookieOptions());
-  res.json({ accessToken });
+
+  // Return the user too — the frontend AuthContext bootstraps from /refresh.
+  const { rows } = await query(`SELECT ${USER_COLUMNS} FROM users WHERE id = $1 LIMIT 1`, [payload.userId]);
+  const user = rows[0] ? await withEffectiveRole(rows[0]) : null;
+  res.json({ accessToken, user });
 });
 
 /** Clear the local session cookie. */

@@ -1,9 +1,9 @@
-import { adminNavGroup } from './clientHub';
+import { tasksNavGroup } from './tasks';
 
 // ==============================|| MENU ITEMS ||============================== //
 
 const menuItems = {
-  items: [adminNavGroup]
+  items: [tasksNavGroup]
 };
 
 export default menuItems;

@@ -17,14 +17,7 @@ import { drawerWidth } from 'store/constant';
 import SimpleBar from 'ui-component/third-party/SimpleBar';
 
 import { handlerDrawerOpen, useGetMenuMaster } from 'api/menu';
-import useAuth from 'hooks/useAuth';
-import { useLocation } from 'react-router-dom';
-import portalMenu from 'menu-items/portal';
-import portalOnboardingMenu from 'menu-items/portalOnboarding';
 import tasksMenu from 'menu-items/tasks';
-import twilioMenu from 'menu-items/twilio';
-import formsMenu from 'menu-items/forms';
-import ctmFormsMenu from 'menu-items/ctm-forms';
 import TaskSidebarPanel from './TaskSidebarPanel';
 
 // ==============================|| SIDEBAR DRAWER ||============================== //
@@ -34,16 +27,6 @@ function Sidebar() {
 
   const { menuMaster } = useGetMenuMaster();
   const drawerOpen = menuMaster.isDashboardDrawerOpened;
-  const { user, actingClientId } = useAuth();
-  const location = useLocation();
-  
-  // Use portal menu for regular clients or when admin is viewing portal
-  const isPortal = user?.role === 'client' || Boolean(actingClientId) || location.pathname.startsWith('/portal');
-  const isTasks = location.pathname.startsWith('/tasks');
-  const isTwilio = location.pathname.startsWith('/twilio');
-  const isForms = location.pathname.startsWith('/forms');
-  const isCTMForms = location.pathname.startsWith('/ctm-forms');
-  const onboardingPending = user?.role === 'client' && !user?.onboarding_completed_at;
 
   const {
     state: { miniDrawer }
@@ -59,35 +42,7 @@ function Sidebar() {
   );
 
   const drawer = useMemo(() => {
-    let drawerContent = null;
-
-    if (!isPortal) {
-      if (isTasks) {
-        drawerContent = <TaskSidebarPanel />;
-      } else if (!isTwilio && !isForms && !isCTMForms) {
-        drawerContent = (
-          <>
-            <MenuCard />
-            <Stack direction="row" sx={{ justifyContent: 'center', mb: 2 }}>
-              <Chip label={import.meta.env.VITE_APP_VERSION} size="small" color="default" />
-            </Stack>
-          </>
-        );
-      }
-    }
-
-    // Determine which menu config to use
-    const menuConfig = isPortal
-      ? (onboardingPending ? portalOnboardingMenu : portalMenu)
-      : isTasks
-        ? tasksMenu
-        : isTwilio
-          ? twilioMenu
-          : isForms
-            ? formsMenu
-            : isCTMForms
-              ? ctmFormsMenu
-              : undefined;
+    const drawerContent = <TaskSidebarPanel />;
 
     let drawerSX = { paddingLeft: '0px', paddingRight: '0px', marginTop: '20px' };
     if (drawerOpen) drawerSX = { paddingLeft: '16px', paddingRight: '16px', marginTop: '0px' };
@@ -96,31 +51,18 @@ function Sidebar() {
       <>
         {downMD ? (
           <Box sx={drawerSX}>
-            <MenuList menuConfig={menuConfig} />
+            <MenuList menuConfig={tasksMenu} />
             {drawerOpen && drawerContent}
           </Box>
         ) : (
           <SimpleBar sx={{ height: 'calc(100vh - 90px)', ...drawerSX }}>
-            <MenuList menuConfig={menuConfig} />
+            <MenuList menuConfig={tasksMenu} />
             {drawerOpen && drawerContent}
           </SimpleBar>
         )}
       </>
     );
-  }, [
-    downMD,
-    drawerOpen,
-    isPortal,
-    isTasks,
-    isTwilio,
-    isForms,
-    isCTMForms,
-    onboardingPending,
-    location.pathname,
-    user?.role,
-    user?.onboarding_completed_at,
-    actingClientId
-  ]);
+  }, [downMD, drawerOpen]);
 
   return (
     <Box component="nav" data-tutorial="portal-sidebar" sx={{ flexShrink: { md: 0 }, width: { xs: 'auto', md: drawerWidth } }} aria-label="mailbox folders">
