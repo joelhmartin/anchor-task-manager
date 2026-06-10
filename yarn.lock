@@ -2941,9 +2941,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"anchor-client-dashboard@workspace:.":
+"anchor-task-manager@workspace:.":
   version: 0.0.0-use.local
-  resolution: "anchor-client-dashboard@workspace:."
+  resolution: "anchor-task-manager@workspace:."
   dependencies:
     "@ckeditor/ckeditor5-build-classic": "npm:^41.4.2"
     "@ckeditor/ckeditor5-react": "npm:^11.0.0"
