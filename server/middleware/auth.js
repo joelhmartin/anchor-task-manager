@@ -15,50 +15,22 @@
 import { query } from '../db.js';
 import { getEffectiveRole } from '../utils/roles.js';
 import { verifyAccessToken } from '../services/security/index.js';
-import { fetchUserProfile, isMainAppConfigured } from '../services/mainApp.js';
-
-// Backfill a JIT-provisioned user's name/email from the main app (best effort).
-async function enrichUserFromMainApp(userId) {
-  if (!isMainAppConfigured()) return;
-  try {
-    const profile = await fetchUserProfile(userId);
-    if (!profile) return;
-    await query(
-      `UPDATE users
-          SET first_name = COALESCE(NULLIF($2, ''), first_name),
-              last_name  = COALESCE(NULLIF($3, ''), last_name),
-              email      = COALESCE($4, email)
-        WHERE id = $1`,
-      [userId, profile.first_name, profile.last_name, profile.email]
-    );
-  } catch (err) {
-    console.error('[auth] main-app enrichment failed', err?.message || err);
-  }
-}
 
 const USER_COLUMNS = 'id, first_name, last_name, email, role, created_at, avatar_url';
 
 /**
- * Resolve (and JIT-provision) the local user row for a verified token payload.
- * @param {{ userId: string, role?: string }} payload
+ * Resolve the user row for a verified token payload.
+ *
+ * Users are SHARED: this app reads the same `users` table the main app owns
+ * (read-only — the Task Manager's DB role cannot write it). A valid token from
+ * the main app therefore always maps to an existing row; if it doesn't, the
+ * caller is rejected rather than provisioned.
+ *
+ * @param {{ userId: string }} payload
  */
 async function resolveUser(payload) {
-  const existing = await query(`SELECT ${USER_COLUMNS} FROM users WHERE id = $1 LIMIT 1`, [payload.userId]);
-  if (existing.rows[0]) return existing.rows[0];
-
-  // First time we've seen this SSO user — provision a minimal row. Names/email are
-  // placeholders until backfilled from the main app roster; role comes from the token.
-  const placeholderEmail = `${payload.userId}@sso.anchor.local`;
-  const inserted = await query(
-    `INSERT INTO users (id, first_name, last_name, email, password_hash, role)
-     VALUES ($1, '', '', $2, '!sso', $3)
-     ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role
-     RETURNING ${USER_COLUMNS}`,
-    [payload.userId, placeholderEmail, payload.role || 'team']
-  );
-  // Best-effort: backfill real name/email from the main app (non-blocking).
-  enrichUserFromMainApp(payload.userId).catch(() => {});
-  return inserted.rows[0];
+  const { rows } = await query(`SELECT ${USER_COLUMNS} FROM users WHERE id = $1 LIMIT 1`, [payload.userId]);
+  return rows[0] || null;
 }
 
 function readToken(req) {

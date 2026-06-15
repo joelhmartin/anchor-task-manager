@@ -90,24 +90,19 @@ router.post('/login', async (req, res) => {
   if (!DEV_LOGIN) {
     return res.status(404).json({ message: 'Login is handled by the main app (SSO).', code: 'SSO_LOGIN' });
   }
-  const schema = z.object({
-    email: z.string().email(),
-    role: z.enum(['superadmin', 'admin', 'team']).optional()
-  });
+  const schema = z.object({ email: z.string().email() });
   const parsed = schema.safeParse(req.body || {});
   if (!parsed.success) {
     return res.status(400).json({ message: 'A valid email is required.', code: 'BAD_REQUEST' });
   }
   const { email } = parsed.data;
-  const role = parsed.data.role || 'admin';
 
-  const { rows } = await query(
-    `INSERT INTO users (first_name, last_name, email, password_hash, role)
-     VALUES ('Dev', 'User', $1, '!sso', $2)
-     ON CONFLICT (email) DO UPDATE SET role = EXCLUDED.role
-     RETURNING ${USER_COLUMNS}`,
-    [email, role]
-  );
+  // Users are shared (and read-only here) — dev login signs in an EXISTING user
+  // by email; it never creates identities.
+  const { rows } = await query(`SELECT ${USER_COLUMNS} FROM users WHERE email = $1 LIMIT 1`, [email]);
+  if (!rows[0]) {
+    return res.status(404).json({ message: 'No user with that email. Dev login only works for existing users.', code: 'USER_NOT_FOUND' });
+  }
   const user = await withEffectiveRole(rows[0]);
   const sessionId = crypto.randomUUID();
   const accessToken = signAccessToken({

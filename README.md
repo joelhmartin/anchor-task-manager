@@ -8,19 +8,20 @@ It is a **single container**: an Express API that also serves the built React (V
 
 ## Architecture
 
-- **Own database.** The app owns a Postgres database (`anchor_tasks`) on the shared
-  Cloud SQL instance (`anchor-hub-480305:us-central1:anchor`), connected as the
-  `tasks_app` role. Schema = `server/sql/init.sql` + `migrate_security.sql` +
-  `migrate_activity_logs.sql` + the 12 `task-*.sql` incrementals, run on boot when
-  `RUN_MIGRATIONS_ON_START=true`.
+- **Shared database, scoped access.** This app runs **inside the main app's
+  database** (`anchor` on Cloud SQL `anchor-hub-480305:us-central1:anchor`) so it
+  shares one `users` table with the Hub. It connects as the `tasks_app` role, which
+  is locked down to **`SELECT` on `users`** and **read/write on the `task_*` tables**
+  (+ `notifications`, `user_activity_logs`, `security_audit_log`, `email_logs`) — and
+  is **denied all PHI tables** (client_profiles, call_logs, contacts, …). The task
+  tables already exist in that database; this app does **not** run migrations against
+  it (`RUN_MIGRATIONS_ON_START=false`).
 - **SSO, stateless.** Login lives in the main app (anchor-hub). This app only
   *verifies* the shared access-token JWT (signed with the same `JWT_SECRET` /
-  Secret Manager secret) and **JIT-provisions** the user row so `task_*` foreign
-  keys to `users(id)` resolve. There is no shared session store. See
-  `server/middleware/auth.js`.
-- **One cross-app link.** Display names for SSO users and (optionally) client
-  labels for boards are fetched read-only from the main app — see
-  `server/services/mainApp.js`. Degrades to local-only data when `MAIN_APP_URL`
+  Secret Manager secret) and looks the user up in the shared `users` table. There is
+  no shared session store and no local user provisioning. See `server/middleware/auth.js`.
+- **One cross-app link.** Client labels for boards can be fetched read-only from the
+  main app — see `server/services/mainApp.js`. Degrades to no-op when `MAIN_APP_URL`
   is unset.
 
 ## Local development
@@ -55,7 +56,7 @@ gcloud run deploy anchor-tasks --source . --region=us-central1 \
   --allow-unauthenticated \
   --add-cloudsql-instances=anchor-hub-480305:us-central1:anchor \
   --set-secrets=DATABASE_URL=anchor-db-url-tasks:latest,JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_KEY=ENCRYPTION_KEY:latest \
-  --set-env-vars=NODE_ENV=production,RUN_MIGRATIONS_ON_START=true,DEV_LOGIN=false,GOOGLE_CLOUD_PROJECT=anchor-hub-480305,GOOGLE_CLOUD_REGION=us-central1
+  --set-env-vars=NODE_ENV=production,RUN_MIGRATIONS_ON_START=false,DEV_LOGIN=false,GOOGLE_CLOUD_PROJECT=anchor-hub-480305,GOOGLE_CLOUD_REGION=us-central1
 ```
 
 ## Cross-app contract (what the main app must provide)
