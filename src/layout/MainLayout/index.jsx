@@ -16,7 +16,6 @@ import MainContentStyled from './MainContentStyled';
 import Loader from 'ui-component/Loader';
 import { TaskProvider } from 'contexts/TaskContext';
 
-import { logPageView } from 'api/activityLogs';
 import useConfig from 'hooks/useConfig';
 import { handlerDrawerOpen, useGetMenuMaster } from 'api/menu';
 import useAuth from 'hooks/useAuth';
@@ -46,23 +45,9 @@ export default function MainLayout() {
     downMD && handlerDrawerOpen(false);
   }, [downMD]);
 
-  // Track page views for activity log
-  useEffect(() => {
-    const path = location.pathname;
-    const params = new URLSearchParams(location.search);
-    const tab = params.get('tab');
-    const pane = params.get('pane');
-    let page = path;
-    if (tab) page += `?tab=${tab}`;
-    else if (pane) page += `?pane=${pane}`;
-    logPageView(page);
-  }, [location.pathname, location.search]);
-
   // horizontal menu-list bar : drawer
 
   if (menuMasterLoading) return <Loader />;
-
-  const isTasks = location.pathname.startsWith('/tasks');
 
   const content = (
     <Box sx={{ display: 'flex' }}>
@@ -87,12 +72,11 @@ export default function MainLayout() {
     </Box>
   );
 
-  const inner = isTasks ? <TaskProvider>{content}</TaskProvider> : content;
-
-  // TutorialProvider wraps everything so tutorials work across all portal pages
+  // Task-only app: TaskProvider always wraps the layout (the sidebar's TaskSidebarPanel
+  // needs it on every route, including the initial "/" landing before redirect to /tasks).
   return (
     <TutorialProvider>
-      {inner}
+      <TaskProvider>{content}</TaskProvider>
       <TutorialRunner />
     </TutorialProvider>
   );

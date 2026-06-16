@@ -7,7 +7,6 @@ import Typography from '@mui/material/Typography';
 // project imports
 import LogoSection from '../LogoSection';
 import ProfileSection from './ProfileSection';
-import NotificationSection from './NotificationSection';
 import ThemeModeToggle from 'ui-component/extended/ThemeModeToggle';
 
 import { handlerDrawerOpen, useGetMenuMaster } from 'api/menu';
@@ -92,14 +91,6 @@ export default function Header() {
 
       {/* theme mode */}
       <ThemeModeToggle />
-
-      {/* notification */}
-      <NotificationSection />
-      {actingClientId && (
-        <Button variant="outlined" size="small" sx={{ ml: 1 }} onClick={handleBackToHub}>
-          Back to Admin Hub
-        </Button>
-      )}
 
       {/* profile */}
       <ProfileSection />
