@@ -102,7 +102,13 @@ export default function ProfileSection() {
         sx={{ ml: 2, height: '48px', alignItems: 'center', borderRadius: '27px' }}
         icon={
           <Avatar
-            src={user?.avatar_url || Favicon}
+            src={
+              user?.avatar_url
+                ? /^https?:\/\//.test(user.avatar_url)
+                  ? user.avatar_url
+                  : `${(import.meta.env.VITE_MAIN_APP_URL || '').replace(/\/$/, '')}${user.avatar_url}`
+                : Favicon
+            }
             alt="user-images"
             sx={{ typography: 'mediumAvatar', margin: '8px 0 8px 8px !important', cursor: 'pointer' }}
             ref={anchorRef}

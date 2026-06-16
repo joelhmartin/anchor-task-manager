@@ -107,6 +107,16 @@ app.use(
 app.use('/api/auth', authRouter);
 app.use('/api/tasks', tasksRouter);
 
+// Avatars live in the shared users table as `/api/hub/users/:id/avatar` paths and
+// are served by the dashboard's public avatar route. Redirect those requests there
+// so every avatar (profile + task assignees) resolves without a local /api/hub route.
+app.get('/api/hub/users/:id/avatar', (req, res) => {
+  const main = (process.env.MAIN_APP_URL || '').replace(/\/$/, '');
+  if (!main) return res.status(404).end();
+  const qs = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
+  return res.redirect(302, `${main}/api/hub/users/${encodeURIComponent(req.params.id)}/avatar${qs}`);
+});
+
 // Task file attachments are written by multer to <UPLOAD_DIR>/tasks and served here.
 app.use('/uploads', express.static(UPLOAD_DIR));
 app.use('/email-assets', express.static(EMAIL_ASSETS_DIR));
