@@ -583,30 +583,49 @@ router.post('/workspaces', async (req, res) => {
   }
   try {
     const payload = workspaceCreateSchema.parse(req.body);
-    const { rows } = await query(
-      `INSERT INTO task_workspaces (name, created_by)
-       VALUES ($1, $2)
-       RETURNING *`,
-      [payload.name.trim(), req.user.id]
-    );
-    // creator becomes workspace admin
-    await query(
-      `INSERT INTO task_workspace_memberships (workspace_id, user_id, role)
-       VALUES ($1, $2, 'admin')
-       ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = 'admin'`,
-      [rows[0].id, req.user.id]
-    );
-    // Seed default system labels for new workspace
-    try { await seedSystemLabels(rows[0].id); } catch (e) { console.error('[tasks] seed labels error:', e.message); }
-    emitTaskEvent({
-      event_type: 'workspace.created',
-      workspace_id: rows[0].id,
-      entity_type: 'workspace',
-      entity_id: rows[0].id,
-      actor_id: req.user.id,
-      new_value: { name: rows[0].name }
-    });
-    return respondCreated(res, rows[0]);
+    // Atomic: workspace INSERT + admin membership + system-label seed + audit
+    // event all commit together. Without this, a failure between the
+    // workspace INSERT and the membership INSERT would strand a workspace
+    // that nobody (not even the creator) can administer.
+    const db = await getClient();
+    let createdWorkspace;
+    let eventPayload;
+    try {
+      await db.query('BEGIN');
+      const { rows } = await db.query(
+        `INSERT INTO task_workspaces (name, created_by)
+         VALUES ($1, $2)
+         RETURNING *`,
+        [payload.name.trim(), req.user.id]
+      );
+      createdWorkspace = rows[0];
+      // creator becomes workspace admin
+      await db.query(
+        `INSERT INTO task_workspace_memberships (workspace_id, user_id, role)
+         VALUES ($1, $2, 'admin')
+         ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = 'admin'`,
+        [createdWorkspace.id, req.user.id]
+      );
+      // Seed default system labels for new workspace
+      await seedSystemLabels(createdWorkspace.id, db);
+      eventPayload = {
+        event_type: 'workspace.created',
+        workspace_id: createdWorkspace.id,
+        entity_type: 'workspace',
+        entity_id: createdWorkspace.id,
+        actor_id: req.user.id,
+        new_value: { name: createdWorkspace.name }
+      };
+      await persistTaskEventInTx(db, eventPayload);
+      await db.query('COMMIT');
+    } catch (txErr) {
+      try { await db.query('ROLLBACK'); } catch { /* noop */ }
+      throw txErr;
+    } finally {
+      db.release();
+    }
+    fireTaskEventSubscribers(eventPayload);
+    return respondCreated(res, createdWorkspace);
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ message: err.issues[0]?.message || 'Invalid payload' });
@@ -1342,12 +1361,6 @@ router.post('/boards/:boardId/status-labels/init', async (req, res) => {
       return res.status(403).json({ message: 'Only admins can manage status labels' });
     }
 
-    // Check if labels already exist
-    const { rows: existing } = await query('SELECT COUNT(*) FROM task_board_status_labels WHERE board_id = $1', [boardId]);
-    if (Number(existing[0].count) > 0) {
-      return res.status(400).json({ message: 'Status labels already initialized for this board' });
-    }
-
     // Insert default labels
     const defaults = [
       { label: 'To Do', color: '#808080', order_index: 0, is_done_state: false },
@@ -1357,27 +1370,53 @@ router.post('/boards/:boardId/status-labels/init', async (req, res) => {
       { label: 'Needs Attention', color: '#ff642e', order_index: 4, is_done_state: false }
     ];
 
-    const insertedLabels = [];
-    for (const d of defaults) {
-      const { rows } = await query(
-        `INSERT INTO task_board_status_labels (board_id, label, color, order_index, is_done_state)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING *`,
-        [boardId, d.label, d.color, d.order_index, d.is_done_state]
+    // Atomic: existence check + 5x INSERT + audit event all commit together so
+    // a mid-loop failure can't leave a board partially initialized (e.g. 3 of
+    // 5 labels seeded), which would block a retry on the "already initialized"
+    // guard. The existence check moves inside the transaction to also close
+    // the TOCTOU race between two concurrent init requests.
+    const db = await getClient();
+    let insertedLabels;
+    let eventPayload;
+    try {
+      await db.query('BEGIN');
+      const { rows: existing } = await db.query(
+        'SELECT COUNT(*) FROM task_board_status_labels WHERE board_id = $1',
+        [boardId]
       );
-      insertedLabels.push(rows[0]);
+      if (Number(existing[0].count) > 0) {
+        await db.query('ROLLBACK');
+        return res.status(400).json({ message: 'Status labels already initialized for this board' });
+      }
+      insertedLabels = [];
+      for (const d of defaults) {
+        const { rows } = await db.query(
+          `INSERT INTO task_board_status_labels (board_id, label, color, order_index, is_done_state)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING *`,
+          [boardId, d.label, d.color, d.order_index, d.is_done_state]
+        );
+        insertedLabels.push(rows[0]);
+      }
+      eventPayload = {
+        event_type: 'status_label.batch_initialized',
+        workspace_id: workspaceId,
+        board_id: boardId,
+        entity_type: 'status_label',
+        entity_id: boardId,
+        actor_id: req.user.id,
+        new_value: { labels: insertedLabels.map(l => ({ id: l.id, label: l.label })) },
+        metadata: { count: insertedLabels.length }
+      };
+      await persistTaskEventInTx(db, eventPayload);
+      await db.query('COMMIT');
+    } catch (txErr) {
+      try { await db.query('ROLLBACK'); } catch { /* noop */ }
+      throw txErr;
+    } finally {
+      db.release();
     }
-
-    emitTaskEvent({
-      event_type: 'status_label.batch_initialized',
-      workspace_id: workspaceId,
-      board_id: boardId,
-      entity_type: 'status_label',
-      entity_id: boardId,
-      actor_id: req.user.id,
-      new_value: { labels: insertedLabels.map(l => ({ id: l.id, label: l.label })) },
-      metadata: { count: insertedLabels.length }
-    });
+    fireTaskEventSubscribers(eventPayload);
     return res.status(201).json({ status_labels: insertedLabels });
   } catch (err) {
     console.error('[tasks:status-labels:init]', err);
@@ -4854,85 +4893,103 @@ router.post('/governance/transfer', async (req, res) => {
 
     const transferred = { boards: 0, automations: 0, dashboards: 0, items_created: 0 };
 
-    // Transfer board ownership (created_by)
-    const { rowCount: boardCount } = await query(
-      `UPDATE task_boards SET created_by = $1
-       WHERE created_by = $2 AND workspace_id = $3`,
-      [to_user_id, from_user_id, workspace_id]
-    );
-    transferred.boards = boardCount;
+    // Atomic: every ownership-reassign write commits together. A mid-sequence
+    // failure (e.g. assignee conflict, network blip) would otherwise leave
+    // the workspace half-transferred — boards owned by the new user, items
+    // still owned by the old one — with no resume path. Under HIPAA the
+    // audit trail must reflect the actual end-state, so the event row is
+    // written inside the same transaction.
+    const db = await getClient();
+    let eventPayload;
+    try {
+      await db.query('BEGIN');
 
-    // Transfer automation ownership
-    const { rowCount: autoCount } = await query(
-      `UPDATE task_board_automations SET created_by = $1
-       WHERE created_by = $2 AND board_id IN (
-         SELECT id FROM task_boards WHERE workspace_id = $3
-       )`,
-      [to_user_id, from_user_id, workspace_id]
-    );
-    const { rowCount: globalAutoCount } = await query(
-      `UPDATE task_global_automations SET created_by = $1
-       WHERE created_by = $2 AND workspace_id = $3`,
-      [to_user_id, from_user_id, workspace_id]
-    );
-    transferred.automations = autoCount + globalAutoCount;
+      // Transfer board ownership (created_by)
+      const { rowCount: boardCount } = await db.query(
+        `UPDATE task_boards SET created_by = $1
+         WHERE created_by = $2 AND workspace_id = $3`,
+        [to_user_id, from_user_id, workspace_id]
+      );
+      transferred.boards = boardCount;
 
-    // Transfer dashboard ownership
-    const { rowCount: dashCount } = await query(
-      `UPDATE task_dashboards SET created_by = $1
-       WHERE created_by = $2 AND workspace_id = $3`,
-      [to_user_id, from_user_id, workspace_id]
-    );
-    transferred.dashboards = dashCount;
+      // Transfer automation ownership
+      const { rowCount: autoCount } = await db.query(
+        `UPDATE task_board_automations SET created_by = $1
+         WHERE created_by = $2 AND board_id IN (
+           SELECT id FROM task_boards WHERE workspace_id = $3
+         )`,
+        [to_user_id, from_user_id, workspace_id]
+      );
+      const { rowCount: globalAutoCount } = await db.query(
+        `UPDATE task_global_automations SET created_by = $1
+         WHERE created_by = $2 AND workspace_id = $3`,
+        [to_user_id, from_user_id, workspace_id]
+      );
+      transferred.automations = autoCount + globalAutoCount;
 
-    // Re-assign items created by this user
-    const { rowCount: itemCount } = await query(
-      `UPDATE task_items SET created_by = $1
-       WHERE created_by = $2 AND group_id IN (
-         SELECT g.id FROM task_groups g
-         JOIN task_boards b ON b.id = g.board_id
-         WHERE b.workspace_id = $3
-       )`,
-      [to_user_id, from_user_id, workspace_id]
-    );
-    transferred.items_created = itemCount;
+      // Transfer dashboard ownership
+      const { rowCount: dashCount } = await db.query(
+        `UPDATE task_dashboards SET created_by = $1
+         WHERE created_by = $2 AND workspace_id = $3`,
+        [to_user_id, from_user_id, workspace_id]
+      );
+      transferred.dashboards = dashCount;
 
-    // Re-assign task item assignees
-    await query(
-      `UPDATE task_item_assignees SET user_id = $1
-       WHERE user_id = $2 AND item_id IN (
-         SELECT i.id FROM task_items i
-         JOIN task_groups g ON g.id = i.group_id
-         JOIN task_boards b ON b.id = g.board_id
-         WHERE b.workspace_id = $3
-       )
-       ON CONFLICT (item_id, user_id) DO NOTHING`,
-      [to_user_id, from_user_id, workspace_id]
-    );
+      // Re-assign items created by this user
+      const { rowCount: itemCount } = await db.query(
+        `UPDATE task_items SET created_by = $1
+         WHERE created_by = $2 AND group_id IN (
+           SELECT g.id FROM task_groups g
+           JOIN task_boards b ON b.id = g.board_id
+           WHERE b.workspace_id = $3
+         )`,
+        [to_user_id, from_user_id, workspace_id]
+      );
+      transferred.items_created = itemCount;
 
-    // Remove old assignee entries that conflicted
-    await query(
-      `DELETE FROM task_item_assignees
-       WHERE user_id = $1 AND item_id IN (
-         SELECT i.id FROM task_items i
-         JOIN task_groups g ON g.id = i.group_id
-         JOIN task_boards b ON b.id = g.board_id
-         WHERE b.workspace_id = $2
-       )`,
-      [from_user_id, workspace_id]
-    );
+      // Re-assign task item assignees
+      await db.query(
+        `UPDATE task_item_assignees SET user_id = $1
+         WHERE user_id = $2 AND item_id IN (
+           SELECT i.id FROM task_items i
+           JOIN task_groups g ON g.id = i.group_id
+           JOIN task_boards b ON b.id = g.board_id
+           WHERE b.workspace_id = $3
+         )
+         ON CONFLICT (item_id, user_id) DO NOTHING`,
+        [to_user_id, from_user_id, workspace_id]
+      );
 
-    // Log the transfer in task_events
-    const { emitTaskEvent } = await import('../services/taskEventBus.js');
-    emitTaskEvent({
-      event_type: 'governance.content_transferred',
-      workspace_id: workspace_id,
-      entity_type: 'user',
-      entity_id: from_user_id,
-      actor_id: req.user.id,
-      metadata: { from_user_id, to_user_id, transferred }
-    });
+      // Remove old assignee entries that conflicted
+      await db.query(
+        `DELETE FROM task_item_assignees
+         WHERE user_id = $1 AND item_id IN (
+           SELECT i.id FROM task_items i
+           JOIN task_groups g ON g.id = i.group_id
+           JOIN task_boards b ON b.id = g.board_id
+           WHERE b.workspace_id = $2
+         )`,
+        [from_user_id, workspace_id]
+      );
 
+      eventPayload = {
+        event_type: 'governance.content_transferred',
+        workspace_id: workspace_id,
+        entity_type: 'user',
+        entity_id: from_user_id,
+        actor_id: req.user.id,
+        metadata: { from_user_id, to_user_id, transferred }
+      };
+      await persistTaskEventInTx(db, eventPayload);
+      await db.query('COMMIT');
+    } catch (txErr) {
+      try { await db.query('ROLLBACK'); } catch { /* noop */ }
+      throw txErr;
+    } finally {
+      db.release();
+    }
+
+    fireTaskEventSubscribers(eventPayload);
     res.json({ ok: true, transferred });
   } catch (err) {
     console.error('[tasks] POST governance/transfer error:', err.message);
