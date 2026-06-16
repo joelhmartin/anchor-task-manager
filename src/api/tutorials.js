@@ -1,9 +1,10 @@
-import client from './client';
+// Tutorials are a dashboard feature with no backend in the Task Manager.
+// Stubbed to no-ops so TutorialContext stays intact without hitting a 404.
 
 export function getTutorialCompletions() {
-  return client.get('/tutorials/completions').then((res) => res.data.completions || []);
+  return Promise.resolve([]);
 }
 
-export function markTutorialComplete(tutorialId) {
-  return client.post(`/tutorials/${tutorialId}/complete`).then((res) => res.data);
+export function markTutorialComplete() {
+  return Promise.resolve({});
 }
