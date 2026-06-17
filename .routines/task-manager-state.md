@@ -8,16 +8,28 @@ Routine A reads this file for the queue and known_issues only. Merge state lives
 
 See the full aspect spec in `docs/refactoring/task-manager-aspects.md`.
 
+## completed (pre-migration)
+
+These aspects were finished and merged in the original repo
+(`joelhmartin/Anchor-Client-Dashboard`) **before** this codebase was consolidated
+into `joelhmartin/anchor-task-manager` as a single squashed "Baseline" commit on
+2026-06-10. That import carried the *code* but NOT the merged-PR history, so
+Routine A's Step 0 (`gh pr list --state merged`) sees an empty set in this repo
+and would otherwise restart from the top of the queue. They are recorded here and
+removed from the queue below so the routine resumes at the correct next aspect.
+
+- phase-1-soft-delete-audit  (merged 2026-05-12, source repo — never in queue)
+- phase-1-transactions       (merged 2026-05-12, source repo; re-merged here as PR #1 on 2026-06-17)
+- phase-1-pagination         (merged 2026-05-13, source repo)
+- phase-1-response-shape     (merged 2026-05-14, source repo)
+- phase-2-aria-labels        (merged 2026-05-15, source repo)
+- phase-2-toast-on-mutations (merged 2026-05-18, source repo)
+- phase-2-theme-tokens       (merged 2026-05-20, source repo)
+
 ## queue
 
-Aspects to work through, in order. Routine A picks the first item not already merged on GitHub. Remove items as they merge if you want to keep this list tidy (cosmetic — Routine A filters by merged state regardless).
+Aspects to work through, in order. Routine A picks the first item not already merged on GitHub. Remove items as they merge if you want to keep this list tidy. NOTE: because the pre-migration merge history did not transfer (see "completed" above), the queue prune below is load-bearing, not cosmetic — Routine A's merged-PR filter starts empty in this repo and rebuilds only from PRs merged here going forward.
 
-- phase-1-transactions
-- phase-1-pagination
-- phase-1-response-shape
-- phase-2-aria-labels
-- phase-2-toast-on-mutations
-- phase-2-theme-tokens
 - phase-2-tooltips-truncated
 - phase-2-loading-empty-error
 - phase-2-confirm-dialogs
