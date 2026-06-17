@@ -15,16 +15,20 @@ const SYSTEM_LABELS = [
   { category: 'workflow', label: 'Ready for QC', color: '#66ccff', is_exclusive: false, order_index: 5 },
 ];
 
-export async function seedSystemLabels(workspaceId) {
+// Accepts an optional `client` so callers that already opened a transaction
+// (e.g. workspace creation) can seed inside it and roll the whole thing back
+// on failure instead of leaving an orphaned workspace with no labels.
+export async function seedSystemLabels(workspaceId, client = null) {
+  const runner = client || { query };
   // Check if labels already exist for this workspace
-  const { rowCount } = await query(
+  const { rowCount } = await runner.query(
     'SELECT 1 FROM task_label_definitions WHERE workspace_id = $1 LIMIT 1',
     [workspaceId]
   );
   if (rowCount > 0) return; // already seeded
 
   for (const lbl of SYSTEM_LABELS) {
-    await query(
+    await runner.query(
       `INSERT INTO task_label_definitions (workspace_id, category, label, color, is_exclusive, is_system, order_index)
        VALUES ($1, $2, $3, $4, $5, true, $6)
        ON CONFLICT (workspace_id, category, label) DO NOTHING`,
