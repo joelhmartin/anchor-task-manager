@@ -1380,6 +1380,11 @@ router.post('/boards/:boardId/status-labels/init', async (req, res) => {
     let eventPayload;
     try {
       await db.query('BEGIN');
+      // Serialize concurrent init per board: lock the board row so a second
+      // request blocks here until the first commits, closing the TOCTOU race
+      // (task_board_status_labels has no unique (board_id, label) constraint,
+      // so without this lock two requests could both seed duplicate defaults).
+      await db.query('SELECT 1 FROM task_boards WHERE id = $1 FOR UPDATE', [boardId]);
       const { rows: existing } = await db.query(
         'SELECT COUNT(*) FROM task_board_status_labels WHERE board_id = $1',
         [boardId]
@@ -4947,29 +4952,26 @@ router.post('/governance/transfer', async (req, res) => {
       );
       transferred.items_created = itemCount;
 
-      // Re-assign task item assignees
+      // Re-assign task item assignees: delete the source user's rows and
+      // re-insert them under the target user. ON CONFLICT skips items the
+      // target already owns, so this is conflict-safe and atomic in one query.
+      // (UPDATE ... ON CONFLICT is invalid Postgres — ON CONFLICT is INSERT-only.)
       await db.query(
-        `UPDATE task_item_assignees SET user_id = $1
-         WHERE user_id = $2 AND item_id IN (
-           SELECT i.id FROM task_items i
-           JOIN task_groups g ON g.id = i.group_id
-           JOIN task_boards b ON b.id = g.board_id
-           WHERE b.workspace_id = $3
+        `WITH moved AS (
+           DELETE FROM task_item_assignees
+           WHERE user_id = $2 AND item_id IN (
+             SELECT i.id FROM task_items i
+             JOIN task_groups g ON g.id = i.group_id
+             JOIN task_boards b ON b.id = g.board_id
+             WHERE b.workspace_id = $3
+           )
+           RETURNING item_id
          )
+         INSERT INTO task_item_assignees (item_id, user_id)
+         SELECT item_id, $1
+         FROM moved
          ON CONFLICT (item_id, user_id) DO NOTHING`,
         [to_user_id, from_user_id, workspace_id]
-      );
-
-      // Remove old assignee entries that conflicted
-      await db.query(
-        `DELETE FROM task_item_assignees
-         WHERE user_id = $1 AND item_id IN (
-           SELECT i.id FROM task_items i
-           JOIN task_groups g ON g.id = i.group_id
-           JOIN task_boards b ON b.id = g.board_id
-           WHERE b.workspace_id = $2
-         )`,
-        [from_user_id, workspace_id]
       );
 
       eventPayload = {
