@@ -78,10 +78,14 @@ function TriggerNode({ data }) {
             <IconBolt size={16} color={AUTOMATION_NODE_COLORS.trigger} />
             <Typography variant="subtitle2" sx={{ fontWeight: 600, color: AUTOMATION_NODE_COLORS.trigger }}>Trigger</Typography>
           </Stack>
-          <Typography variant="body2" noWrap sx={{ mt: 0.25 }}>
-            {getTriggerLabel(data.triggerType)}
-            {data.triggerConfig?.to_status && ` \u2192 ${data.triggerConfig.to_status}`}
-          </Typography>
+          {(() => {
+            const triggerSummary = `${getTriggerLabel(data.triggerType)}${data.triggerConfig?.to_status ? ` \u2192 ${data.triggerConfig.to_status}` : ''}`;
+            return (
+              <Typography variant="body2" noWrap sx={{ mt: 0.25 }} title={triggerSummary}>
+                {triggerSummary}
+              </Typography>
+            );
+          })()}
         </Box>
         <IconButton
           size="small"
@@ -128,7 +132,7 @@ function ActionNode({ data }) {
             <Chip label={getActionLabel(data.actionType)} size="small" variant="outlined" sx={{ height: 18, fontSize: '0.6rem' }} />
           </Stack>
           {data.actionConfig?.title && (
-            <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', mt: 0.25 }}>
+            <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', mt: 0.25 }} title={data.actionConfig.title}>
               {data.actionConfig.title}
             </Typography>
           )}
@@ -196,7 +200,7 @@ function ConditionNode({ data }) {
               sx={{ height: 18, fontSize: '0.6rem', bgcolor: color, color: 'common.white', fontWeight: 600 }}
             />
             {summary && (
-              <Typography variant="caption" color="text.secondary" noWrap>{summary}</Typography>
+              <Typography variant="caption" color="text.secondary" noWrap title={summary}>{summary}</Typography>
             )}
           </Stack>
         </Box>

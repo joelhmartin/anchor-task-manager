@@ -140,7 +140,7 @@ export default function AutomationsDrawer({ open, onClose, boardId, onOpenAutoma
                   }}
                 >
                   <Stack sx={{ minWidth: 0 }}>
-                    <Typography variant="body2" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <Typography variant="body2" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.name}>
                       {r.name}
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
