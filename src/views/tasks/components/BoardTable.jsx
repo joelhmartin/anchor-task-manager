@@ -87,6 +87,7 @@ const ItemRow = memo(function ItemRow({
               variant="body2"
               sx={{ fontWeight: 600, minWidth: 0, flex: 1 }}
               noWrap
+              title={item.name}
               onClick={() => onNameClick(item)}
               onDoubleClick={() => onNameDoubleClick(item)}
             >
@@ -219,13 +220,16 @@ const ItemRow = memo(function ItemRow({
       </Box>
 
       {/* mirror columns */}
-      {Object.entries(mirrorValues).map(([colId, val]) => (
-        <Box key={colId} sx={{ p: 1, display: 'flex', alignItems: 'center' }}>
-          <Typography variant="caption" color="text.secondary" noWrap>
-            {val == null ? '—' : Array.isArray(val) ? val.join(', ') : String(val)}
-          </Typography>
-        </Box>
-      ))}
+      {Object.entries(mirrorValues).map(([colId, val]) => {
+        const display = val == null ? '—' : Array.isArray(val) ? val.join(', ') : String(val);
+        return (
+          <Box key={colId} sx={{ p: 1, display: 'flex', alignItems: 'center' }}>
+            <Typography variant="caption" color="text.secondary" noWrap title={display}>
+              {display}
+            </Typography>
+          </Box>
+        );
+      })}
     </Box>
   );
 }, (prev, next) => {
@@ -766,7 +770,7 @@ export default function BoardTable({
                           {(label || 'U').slice(0, 1).toUpperCase()}
                         </Avatar>
                         <Stack sx={{ minWidth: 0, flex: 1, alignItems: 'flex-start' }}>
-                          <Typography variant="body2" noWrap sx={{ width: '100%', display: 'block', textAlign: 'left' }}>
+                          <Typography variant="body2" noWrap sx={{ width: '100%', display: 'block', textAlign: 'left' }} title={label}>
                             {label}
                           </Typography>
                         </Stack>
