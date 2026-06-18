@@ -7,7 +7,7 @@ const columns = [
     label: 'Name',
     sortable: true,
     render: (row) => (
-      <Typography variant="body2" noWrap sx={{ maxWidth: 180 }}>
+      <Typography variant="body2" noWrap sx={{ maxWidth: 180 }} title={row.name}>
         {row.name}
       </Typography>
     )
@@ -27,7 +27,7 @@ const columns = [
     sortable: true,
     width: 120,
     render: (row) => (
-      <Typography variant="caption" color="text.secondary" noWrap>
+      <Typography variant="caption" color="text.secondary" noWrap title={row.board_name || ''}>
         {row.board_name}
       </Typography>
     )
