@@ -97,6 +97,7 @@ export default function BoardHeader({
             <Typography
               variant="h6"
               sx={{ cursor: canEdit ? 'pointer' : 'default', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+              title={board?.name || ''}
               onClick={() => canEdit && setEditingName(true)}
             >
               {board?.name || 'Board'}

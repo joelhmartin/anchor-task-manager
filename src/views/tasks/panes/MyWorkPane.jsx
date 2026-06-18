@@ -210,7 +210,7 @@ export default function MyWorkPane({
                                     {!si.isBlocked && (
                                       <CheckCircleOutlineIcon sx={{ fontSize: 14, color: 'success.main' }} />
                                     )}
-                                    <Typography variant="body2" noWrap>
+                                    <Typography variant="body2" noWrap title={si.name}>
                                       {si.name}
                                     </Typography>
                                   </Stack>

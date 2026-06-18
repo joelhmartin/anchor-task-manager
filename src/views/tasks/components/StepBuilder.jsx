@@ -21,7 +21,7 @@ function StepSummary({ step }) {
       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
         <Chip label={getActionLabel(step.action_type)} size="small" sx={{ height: 20, fontSize: '0.7rem' }} />
         {step.action_config?.title && (
-          <Typography variant="caption" color="text.secondary" noWrap>
+          <Typography variant="caption" color="text.secondary" noWrap title={step.action_config.title}>
             {step.action_config.title}
           </Typography>
         )}

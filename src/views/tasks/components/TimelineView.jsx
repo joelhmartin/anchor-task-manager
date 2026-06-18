@@ -475,7 +475,7 @@ export default function TimelineView({
           <Box key={grp.group.id}>
             {/* Group header */}
             <Box sx={{ height: ROW_HEIGHT, display: 'flex', alignItems: 'center', px: 1, bgcolor: 'action.hover' }}>
-              <Typography variant="caption" fontWeight={700} noWrap>{grp.group.name}</Typography>
+              <Typography variant="caption" fontWeight={700} noWrap title={grp.group.name}>{grp.group.name}</Typography>
             </Box>
             {grp.items.map((item) => {
               const isExpanded = !!expandedItems[item.id];
@@ -530,6 +530,7 @@ export default function TimelineView({
                       variant="caption"
                       noWrap
                       sx={{ maxWidth: SIDEBAR_WIDTH - 32, ml: 0.25 }}
+                      title={item.name}
                       onClick={() => onItemClick?.(item)}
                     >
                       {item.name}
@@ -561,6 +562,7 @@ export default function TimelineView({
                         <Typography
                           variant="caption"
                           noWrap
+                          title={sub.name}
                           sx={{
                             flex: 1,
                             fontSize: '0.7rem',
@@ -609,7 +611,7 @@ export default function TimelineView({
                 }}
                 onClick={() => onItemClick?.(item)}
               >
-                <Typography variant="caption" noWrap sx={{ maxWidth: SIDEBAR_WIDTH - 16, fontStyle: 'italic', color: 'text.disabled' }}>
+                <Typography variant="caption" noWrap sx={{ maxWidth: SIDEBAR_WIDTH - 16, fontStyle: 'italic', color: 'text.disabled' }} title={item.name}>
                   {item.name}
                 </Typography>
               </Box>

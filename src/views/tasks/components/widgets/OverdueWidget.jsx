@@ -17,7 +17,7 @@ export default function OverdueWidget({ data }) {
       id: 'name',
       label: 'Item',
       render: (row) => (
-        <Typography variant="body2" noWrap sx={{ maxWidth: 200 }}>
+        <Typography variant="body2" noWrap sx={{ maxWidth: 200 }} title={row.name}>
           {row.name}
         </Typography>
       )

@@ -47,7 +47,7 @@ export default function RecentActivityWidget({ data }) {
                   variant="outlined"
                   sx={{ fontSize: '0.7rem' }}
                 />
-                <Typography variant="body2" noWrap>
+                <Typography variant="body2" noWrap title={event.entity_name || event.entity_type || ''}>
                   {event.entity_name || event.entity_type || ''}
                 </Typography>
               </Box>

@@ -80,6 +80,7 @@ function KanbanCard({ item, itemLabels, assignees, statusLabels, onClickItem, is
           WebkitBoxOrient: 'vertical',
           overflow: 'hidden'
         }}
+        title={item.name}
         onClick={(e) => {
           e.stopPropagation();
           onClickItem?.(item);

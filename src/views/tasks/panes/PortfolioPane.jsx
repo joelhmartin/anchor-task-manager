@@ -96,7 +96,7 @@ export default function PortfolioPane() {
         <Stack>
           <Typography variant="subtitle2">{row.name}</Typography>
           {row.description && (
-            <Typography variant="caption" color="text.secondary" noWrap sx={{ maxWidth: 180 }}>
+            <Typography variant="caption" color="text.secondary" noWrap sx={{ maxWidth: 180 }} title={row.description}>
               {row.description}
             </Typography>
           )}

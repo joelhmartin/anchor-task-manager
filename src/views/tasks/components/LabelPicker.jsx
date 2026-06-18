@@ -105,7 +105,7 @@ export default function LabelPicker({
                             flexShrink: 0
                           }}
                         />
-                        <Typography variant="body2" noWrap sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography variant="body2" noWrap sx={{ flex: 1, minWidth: 0 }} title={label.label}>
                           {label.label}
                         </Typography>
                       </Stack>

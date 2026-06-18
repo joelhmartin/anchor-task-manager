@@ -66,11 +66,14 @@ const columns = [
     id: 'actor',
     label: 'By',
     width: 130,
-    render: (row) => (
-      <Typography variant="caption" noWrap>
-        {row.first_name ? `${row.first_name} ${row.last_name || ''}`.trim() : row.actor_type || 'system'}
-      </Typography>
-    )
+    render: (row) => {
+      const actor = row.first_name ? `${row.first_name} ${row.last_name || ''}`.trim() : row.actor_type || 'system';
+      return (
+        <Typography variant="caption" noWrap title={actor}>
+          {actor}
+        </Typography>
+      );
+    }
   },
   {
     id: 'item_name',
@@ -88,7 +91,7 @@ const columns = [
     label: 'Board',
     width: 120,
     render: (row) => (
-      <Typography variant="caption" color="text.secondary" noWrap>
+      <Typography variant="caption" color="text.secondary" noWrap title={row.board_name || ''}>
         {row.board_name || '—'}
       </Typography>
     )

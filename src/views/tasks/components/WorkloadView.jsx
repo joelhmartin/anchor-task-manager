@@ -103,7 +103,7 @@ export default function WorkloadView({ items = [], groups = [], statusLabels = [
               {/* Info + bar */}
               <Box sx={{ flex: 1, minWidth: 0 }}>
                 <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
-                  <Typography variant="subtitle2" noWrap>{person.name}</Typography>
+                  <Typography variant="subtitle2" noWrap title={person.name}>{person.name}</Typography>
                   <Typography variant="caption" color="text.secondary">
                     {person.items.length} item{person.items.length !== 1 ? 's' : ''}
                   </Typography>
