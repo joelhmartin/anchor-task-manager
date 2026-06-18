@@ -119,7 +119,7 @@ function AutomationCard({ rule, onToggle, onEdit, onDelete, onReEnable }) {
       <Switch size="small" checked={rule.is_active} onChange={() => onToggle(rule)} />
 
       <Stack sx={{ flex: 1, minWidth: 0 }}>
-        <Typography variant="body2" fontWeight={500} noWrap>
+        <Typography variant="body2" fontWeight={500} noWrap title={rule.name}>
           {rule.name}
         </Typography>
         <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap">
