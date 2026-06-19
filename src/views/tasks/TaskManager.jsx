@@ -374,6 +374,7 @@ export default function TaskManager() {
 
             <BoardTable
               boardId={activeBoardId}
+              loading={board.boardViewLoading}
               groups={board.boardView?.groups || []}
               itemsByGroup={filteredItemsByGroup}
               assigneesByItem={board.boardView?.assignees_by_item || {}}

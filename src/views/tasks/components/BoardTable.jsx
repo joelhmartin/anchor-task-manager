@@ -15,13 +15,15 @@ import {
   Paper,
   Popper,
   Select,
+  Skeleton,
   Slider,
   Stack,
   TextField,
   Typography
 } from '@mui/material';
-import { IconChevronDown, IconChevronRight, IconMessageCircle, IconClock, IconTrash } from '@tabler/icons-react';
+import { IconChevronDown, IconChevronRight, IconMessageCircle, IconClock, IconLayoutGrid, IconTrash } from '@tabler/icons-react';
 import ConfirmDialog from 'ui-component/extended/ConfirmDialog';
+import EmptyState from 'ui-component/extended/EmptyState';
 import FormDialog from 'ui-component/extended/FormDialog';
 import { DEFAULT_STATUS_LABELS, getStatusColor, fmtMinutes, DEFAULT_LABEL_COLOR } from 'constants/taskDefaults';
 import LabelPicker, { LabelChips } from './LabelPicker';
@@ -279,7 +281,8 @@ export default function BoardTable({
   onChangeNewItemName,
   onCreateItem,
   mirrorColumns = [],
-  mirrorData = {}
+  mirrorData = {},
+  loading = false
 }) {
   const labels = statusLabels.length ? statusLabels : DEFAULT_STATUS_LABELS;
   const [collapsedGroups, setCollapsedGroups] = useState({});
@@ -525,6 +528,32 @@ export default function BoardTable({
     },
     overscan: 10
   });
+
+  if (loading && groups.length === 0) {
+    return (
+      <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, overflow: 'hidden', p: 1.25 }} aria-label="Loading board">
+        <Stack spacing={1}>
+          <Skeleton variant="rounded" height={36} />
+          {[0, 1, 2, 3, 4].map((i) => (
+            <Skeleton key={i} variant="rounded" height={44} />
+          ))}
+        </Stack>
+      </Box>
+    );
+  }
+
+  if (!loading && groups.length === 0) {
+    return (
+      <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, overflow: 'hidden', p: 1.25 }}>
+        <EmptyState
+          icon={IconLayoutGrid}
+          title="No groups yet."
+          message="Add a group above to start organizing items in this board."
+          sx={{ py: 6 }}
+        />
+      </Box>
+    );
+  }
 
   return (
     <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, overflow: 'hidden' }}>
