@@ -531,7 +531,13 @@ export default function BoardTable({
 
   if (loading && groups.length === 0) {
     return (
-      <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, overflow: 'hidden', p: 1.25 }} aria-label="Loading board">
+      <Box
+        sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, overflow: 'hidden', p: 1.25 }}
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+        aria-label="Loading board"
+      >
         <Stack spacing={1}>
           <Skeleton variant="rounded" height={36} />
           {[0, 1, 2, 3, 4].map((i) => (

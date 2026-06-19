@@ -208,7 +208,8 @@ export default function TimelineView({
   onItemClick,
   dependencies = [],
   baselineSnapshot = null,
-  criticalPathIds = []
+  criticalPathIds = [],
+  loading = false
 }) {
   const criticalSet = useMemo(() => new Set(criticalPathIds), [criticalPathIds]);
   const scrollRef = useRef(null);
@@ -455,7 +456,7 @@ export default function TimelineView({
 
   const contentHeight = HEADER_HEIGHT + totalRowsComputed * ROW_HEIGHT;
 
-  if (!items.length) {
+  if (!loading && !items.length) {
     return (
       <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1.25 }}>
         <EmptyState
@@ -533,7 +534,15 @@ export default function TimelineView({
                       onClick={(e) => { e.stopPropagation(); toggleExpand(item.id); }}
                     >
                       {isLoading ? (
-                        <Skeleton variant="circular" width={12} height={12} aria-label="Loading subitems" />
+                        <Skeleton
+                          variant="circular"
+                          width={12}
+                          height={12}
+                          role="status"
+                          aria-live="polite"
+                          aria-busy="true"
+                          aria-label="Loading subitems"
+                        />
                       ) : isExpanded ? (
                         <IconChevronDown size={14} />
                       ) : (
@@ -601,6 +610,9 @@ export default function TimelineView({
                   {isExpanded && isLoading && (
                     <Box
                       sx={{ height: ROW_HEIGHT, display: 'flex', alignItems: 'center', pl: `${SUBITEM_INDENT + 4}px`, pr: 0.5 }}
+                      role="status"
+                      aria-live="polite"
+                      aria-busy="true"
                       aria-label="Loading subitems"
                     >
                       <Skeleton variant="text" width="70%" height={14} />
@@ -967,6 +979,9 @@ export default function TimelineView({
                           {isExpanded && cache?.loading && (
                             <Skeleton
                               variant="rounded"
+                              role="status"
+                              aria-live="polite"
+                              aria-busy="true"
                               aria-label="Loading subitem bars"
                               sx={{
                                 position: 'absolute',

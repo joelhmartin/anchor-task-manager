@@ -328,7 +328,7 @@ export default function ItemDrawer({
           <Stack spacing={0.5}>
             <Typography variant="caption" color="text.secondary">Dependencies</Typography>
             {depsLoading ? (
-              <Stack direction="row" spacing={0.5} aria-label="Loading dependencies">
+              <Stack direction="row" spacing={0.5} role="status" aria-live="polite" aria-busy="true" aria-label="Loading dependencies">
                 <Skeleton variant="rounded" width={120} height={24} />
                 <Skeleton variant="rounded" width={90} height={24} />
               </Stack>
@@ -396,7 +396,7 @@ export default function ItemDrawer({
               </Button>
             </Stack>
             {linksLoading ? (
-              <Stack spacing={0.5} aria-label="Loading links">
+              <Stack spacing={0.5} role="status" aria-live="polite" aria-busy="true" aria-label="Loading links">
                 <Skeleton variant="rounded" width="80%" height={22} />
                 <Skeleton variant="rounded" width="65%" height={22} />
               </Stack>
@@ -460,7 +460,15 @@ export default function ItemDrawer({
               </Stack>
             </Typography>
             {recurrenceLoading ? (
-              <Skeleton variant="rounded" width={120} height={26} aria-label="Loading recurrence" />
+              <Skeleton
+                variant="rounded"
+                width={120}
+                height={26}
+                role="status"
+                aria-live="polite"
+                aria-busy="true"
+                aria-label="Loading recurrence"
+              />
             ) : recurrence ? (
               <Stack direction="row" spacing={0.5} alignItems="center">
                 <Chip
@@ -610,7 +618,7 @@ function UpdatesTab({
 
       <Typography variant="subtitle2">Feed</Typography>
       {itemUpdatesLoading ? (
-        <Stack spacing={1} aria-label="Loading updates">
+        <Stack spacing={1} role="status" aria-live="polite" aria-busy="true" aria-label="Loading updates">
           {[0, 1, 2].map((i) => (
             <Box key={i} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
               <Skeleton variant="text" width="40%" height={14} />
@@ -691,7 +699,7 @@ function FilesTab({ itemFiles, itemFilesLoading, uploadingFile, onUploadFile, ac
     <Stack spacing={1}>
       <Typography variant="subtitle2">Files</Typography>
       {itemFilesLoading ? (
-        <Stack spacing={1} aria-label="Loading files">
+        <Stack spacing={1} role="status" aria-live="polite" aria-busy="true" aria-label="Loading files">
           {[0, 1].map((i) => (
             <Box key={i} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
               <Skeleton variant="text" width="60%" />
@@ -751,7 +759,7 @@ function TimeTab({
     <Stack spacing={1}>
       <Typography variant="subtitle2">Time entries</Typography>
       {timeEntriesLoading ? (
-        <Stack spacing={1} aria-label="Loading time entries">
+        <Stack spacing={1} role="status" aria-live="polite" aria-busy="true" aria-label="Loading time entries">
           {[0, 1].map((i) => (
             <Box key={i} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
               <Skeleton variant="text" width="55%" />

@@ -969,7 +969,7 @@ export default function AutomationsPane({ activeBoardId = '', boardStatusLabels 
 
           {/* Rules list */}
           {loadingRules ? (
-            <Stack spacing={0.75} aria-label="Loading automations">
+            <Stack spacing={0.75} role="status" aria-live="polite" aria-busy="true" aria-label="Loading automations">
               {[0, 1, 2].map((i) => (
                 <Box key={i} sx={{ p: 1.25, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
                   <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.75 }}>
@@ -1012,7 +1012,7 @@ export default function AutomationsPane({ activeBoardId = '', boardStatusLabels 
         <Stack spacing={1}>
           <Typography variant="subtitle2">Recent runs</Typography>
           {loadingRuns ? (
-            <Stack spacing={0.75} aria-label="Loading recent runs">
+            <Stack spacing={0.75} role="status" aria-live="polite" aria-busy="true" aria-label="Loading recent runs">
               {[0, 1, 2, 3].map((i) => (
                 <Box key={i} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
                   <Skeleton variant="text" width="80%" height={14} />
