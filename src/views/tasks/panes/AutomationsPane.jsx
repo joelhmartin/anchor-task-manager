@@ -9,13 +9,13 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
   Collapse,
   Divider,
   IconButton,
   LinearProgress,
   ListSubheader,
   MenuItem,
+  Skeleton,
   Stack,
   Switch,
   TextField,
@@ -969,7 +969,19 @@ export default function AutomationsPane({ activeBoardId = '', boardStatusLabels 
 
           {/* Rules list */}
           {loadingRules ? (
-            <CircularProgress size={18} />
+            <Stack spacing={0.75} aria-label="Loading automations">
+              {[0, 1, 2].map((i) => (
+                <Box key={i} sx={{ p: 1.25, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.75 }}>
+                    <Skeleton variant="circular" width={20} height={20} />
+                    <Skeleton variant="text" width="45%" />
+                    <Box sx={{ flex: 1 }} />
+                    <Skeleton variant="rounded" width={36} height={20} />
+                  </Stack>
+                  <Skeleton variant="text" width="75%" height={14} />
+                </Box>
+              ))}
+            </Stack>
           ) : (
             <Stack spacing={0.75}>
               {!rules.length && (
@@ -1000,7 +1012,13 @@ export default function AutomationsPane({ activeBoardId = '', boardStatusLabels 
         <Stack spacing={1}>
           <Typography variant="subtitle2">Recent runs</Typography>
           {loadingRuns ? (
-            <CircularProgress size={18} />
+            <Stack spacing={0.75} aria-label="Loading recent runs">
+              {[0, 1, 2, 3].map((i) => (
+                <Box key={i} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+                  <Skeleton variant="text" width="80%" height={14} />
+                </Box>
+              ))}
+            </Stack>
           ) : (
             <Stack spacing={0.75}>
               {!runs.length && (
