@@ -1,10 +1,11 @@
 import { useMemo, useRef, useEffect, useState, useCallback } from 'react';
-import { Avatar, Box, CircularProgress, Stack, Tooltip, Typography } from '@mui/material';
+import { Avatar, Box, Skeleton, Stack, Tooltip, Typography } from '@mui/material';
 import { common } from '@mui/material/colors';
-import { IconChevronDown, IconChevronRight, IconLock } from '@tabler/icons-react';
+import { IconChevronDown, IconChevronRight, IconLock, IconTimeline } from '@tabler/icons-react';
 import { getStatusColor, TIMELINE_COLORS } from 'constants/taskDefaults';
 import { fetchTaskItemSubitems, fetchSubitemDependencies, fetchSubitemAssignees } from 'api/tasks';
 import { useToast } from 'contexts/ToastContext';
+import EmptyState from 'ui-component/extended/EmptyState';
 
 const DAY_WIDTH = 36;
 const BAR_HEIGHT = 24;
@@ -207,7 +208,8 @@ export default function TimelineView({
   onItemClick,
   dependencies = [],
   baselineSnapshot = null,
-  criticalPathIds = []
+  criticalPathIds = [],
+  loading = false
 }) {
   const criticalSet = useMemo(() => new Set(criticalPathIds), [criticalPathIds]);
   const scrollRef = useRef(null);
@@ -454,6 +456,19 @@ export default function TimelineView({
 
   const contentHeight = HEADER_HEIGHT + totalRowsComputed * ROW_HEIGHT;
 
+  if (!loading && !items.length) {
+    return (
+      <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1.25 }}>
+        <EmptyState
+          icon={IconTimeline}
+          title="Nothing to chart on the timeline."
+          message="Items with a start or due date will appear here."
+          sx={{ py: 6 }}
+        />
+      </Box>
+    );
+  }
+
   return (
     <Box sx={{ display: 'flex', border: '1px solid', borderColor: 'divider', borderRadius: 1, overflow: 'hidden', maxHeight: 600 }}>
       {/* Left sidebar */}
@@ -519,7 +534,15 @@ export default function TimelineView({
                       onClick={(e) => { e.stopPropagation(); toggleExpand(item.id); }}
                     >
                       {isLoading ? (
-                        <CircularProgress size={12} />
+                        <Skeleton
+                          variant="circular"
+                          width={12}
+                          height={12}
+                          role="status"
+                          aria-live="polite"
+                          aria-busy="true"
+                          aria-label="Loading subitems"
+                        />
                       ) : isExpanded ? (
                         <IconChevronDown size={14} />
                       ) : (
@@ -585,9 +608,14 @@ export default function TimelineView({
                     );
                   })}
                   {isExpanded && isLoading && (
-                    <Box sx={{ height: ROW_HEIGHT, display: 'flex', alignItems: 'center', pl: `${SUBITEM_INDENT + 4}px` }}>
-                      <CircularProgress size={12} sx={{ mr: 1 }} />
-                      <Typography variant="caption" color="text.disabled">Loading subitems...</Typography>
+                    <Box
+                      sx={{ height: ROW_HEIGHT, display: 'flex', alignItems: 'center', pl: `${SUBITEM_INDENT + 4}px`, pr: 0.5 }}
+                      role="status"
+                      aria-live="polite"
+                      aria-busy="true"
+                      aria-label="Loading subitems"
+                    >
+                      <Skeleton variant="text" width="70%" height={14} />
                     </Box>
                   )}
                   {isExpanded && !isLoading && cache?.subitems?.length === 0 && (
@@ -949,19 +977,20 @@ export default function TimelineView({
 
                           {/* Loading indicator row in timeline */}
                           {isExpanded && cache?.loading && (
-                            <Box
+                            <Skeleton
+                              variant="rounded"
+                              role="status"
+                              aria-live="polite"
+                              aria-busy="true"
+                              aria-label="Loading subitem bars"
                               sx={{
                                 position: 'absolute',
                                 top: subitemStartRow * ROW_HEIGHT + BAR_GAP / 2,
                                 left: 8,
-                                height: SUBITEM_BAR_HEIGHT,
-                                display: 'flex',
-                                alignItems: 'center'
+                                width: 160,
+                                height: SUBITEM_BAR_HEIGHT
                               }}
-                            >
-                              <CircularProgress size={12} sx={{ mr: 1 }} />
-                              <Typography variant="caption" color="text.disabled" fontSize="0.65rem">Loading...</Typography>
-                            </Box>
+                            />
                           )}
 
                           {/* Subitem dependency arrows */}

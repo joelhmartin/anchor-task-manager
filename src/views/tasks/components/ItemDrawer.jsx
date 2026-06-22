@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react';
 import {
   Autocomplete, Avatar, AvatarGroup, Box, Button, Chip, CircularProgress, Divider, Drawer,
   IconButton, List, ListItemButton, ListItemText, Menu, MenuItem, Paper,
-  Popper, Select, Stack, Tab, Tabs, TextField, Tooltip, Typography
+  Popper, Select, Skeleton, Stack, Tab, Tabs, TextField, Tooltip, Typography
 } from '@mui/material';
-import { IconEye, IconPencil, IconPlus, IconRepeat, IconTrash, IconX } from '@tabler/icons-react';
+import { IconClock, IconEye, IconPencil, IconPlus, IconRepeat, IconTrash, IconX } from '@tabler/icons-react';
 import EmptyState from 'ui-component/extended/EmptyState';
+import LoadingButton from 'ui-component/extended/LoadingButton';
 import { useToast } from 'contexts/ToastContext';
 import { getStatusColor } from 'constants/taskDefaults';
 import {
@@ -327,7 +328,10 @@ export default function ItemDrawer({
           <Stack spacing={0.5}>
             <Typography variant="caption" color="text.secondary">Dependencies</Typography>
             {depsLoading ? (
-              <CircularProgress size={16} />
+              <Stack direction="row" spacing={0.5} role="status" aria-live="polite" aria-busy="true" aria-label="Loading dependencies">
+                <Skeleton variant="rounded" width={120} height={24} />
+                <Skeleton variant="rounded" width={90} height={24} />
+              </Stack>
             ) : (
               <Stack spacing={0.75}>
                 {predecessors.length > 0 && (
@@ -392,7 +396,10 @@ export default function ItemDrawer({
               </Button>
             </Stack>
             {linksLoading ? (
-              <CircularProgress size={16} />
+              <Stack spacing={0.5} role="status" aria-live="polite" aria-busy="true" aria-label="Loading links">
+                <Skeleton variant="rounded" width="80%" height={22} />
+                <Skeleton variant="rounded" width="65%" height={22} />
+              </Stack>
             ) : (
               <Stack spacing={0.5}>
                 {links.length === 0 && !showLinkForm && (
@@ -453,7 +460,15 @@ export default function ItemDrawer({
               </Stack>
             </Typography>
             {recurrenceLoading ? (
-              <CircularProgress size={16} />
+              <Skeleton
+                variant="rounded"
+                width={120}
+                height={26}
+                role="status"
+                aria-live="polite"
+                aria-busy="true"
+                aria-label="Loading recurrence"
+              />
             ) : recurrence ? (
               <Stack direction="row" spacing={0.5} alignItems="center">
                 <Chip
@@ -590,18 +605,28 @@ function UpdatesTab({
             )}
           </Paper>
         </Popper>
-        <Button
+        <LoadingButton
           variant="contained"
           onClick={onPostUpdate}
-          disabled={postingUpdate || !newUpdateText.trim() || !activeItem?.id}
+          loading={postingUpdate}
+          loadingLabel="Posting…"
+          disabled={!newUpdateText.trim() || !activeItem?.id}
         >
           Post update
-        </Button>
+        </LoadingButton>
       </Stack>
 
       <Typography variant="subtitle2">Feed</Typography>
       {itemUpdatesLoading ? (
-        <CircularProgress size={18} />
+        <Stack spacing={1} role="status" aria-live="polite" aria-busy="true" aria-label="Loading updates">
+          {[0, 1, 2].map((i) => (
+            <Box key={i} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+              <Skeleton variant="text" width="40%" height={14} />
+              <Skeleton variant="text" width="90%" />
+              <Skeleton variant="text" width="70%" />
+            </Box>
+          ))}
+        </Stack>
       ) : (
         <Stack spacing={1}>
           {itemUpdates.length === 0 && (
@@ -674,7 +699,15 @@ function FilesTab({ itemFiles, itemFilesLoading, uploadingFile, onUploadFile, ac
     <Stack spacing={1}>
       <Typography variant="subtitle2">Files</Typography>
       {itemFilesLoading ? (
-        <CircularProgress size={18} />
+        <Stack spacing={1} role="status" aria-live="polite" aria-busy="true" aria-label="Loading files">
+          {[0, 1].map((i) => (
+            <Box key={i} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+              <Skeleton variant="text" width="60%" />
+              <Skeleton variant="text" width="35%" height={12} />
+              <Skeleton variant="rounded" width={64} height={28} sx={{ mt: 0.5 }} />
+            </Box>
+          ))}
+        </Stack>
       ) : (
         <Stack spacing={1}>
           {!itemFiles.length && (
@@ -726,13 +759,23 @@ function TimeTab({
     <Stack spacing={1}>
       <Typography variant="subtitle2">Time entries</Typography>
       {timeEntriesLoading ? (
-        <CircularProgress size={18} />
+        <Stack spacing={1} role="status" aria-live="polite" aria-busy="true" aria-label="Loading time entries">
+          {[0, 1].map((i) => (
+            <Box key={i} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+              <Skeleton variant="text" width="55%" />
+              <Skeleton variant="text" width="35%" height={12} />
+            </Box>
+          ))}
+        </Stack>
       ) : (
         <Stack spacing={1}>
           {!timeEntries.length && (
-            <Typography variant="body2" color="text.secondary">
-              No time entries yet.
-            </Typography>
+            <EmptyState
+              icon={IconClock}
+              title="No time entries yet."
+              message="Log time below to start tracking work on this item."
+              sx={{ py: 2 }}
+            />
           )}
           {timeEntries.map((t) => (
             <Box key={t.id} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
@@ -842,13 +885,15 @@ function TimeTab({
           value={timeDescription}
           onChange={(e) => setTimeDescription(e.target.value)}
         />
-        <Button
+        <LoadingButton
           variant="contained"
           onClick={onLogTime}
-          disabled={loggingTime || !activeItem?.id || Number(timeHours) * 60 + Number(timeMins) <= 0}
+          loading={loggingTime}
+          loadingLabel="Logging…"
+          disabled={!activeItem?.id || Number(timeHours) * 60 + Number(timeMins) <= 0}
         >
-          {loggingTime ? 'Logging…' : 'Log time'}
-        </Button>
+          Log time
+        </LoadingButton>
       </Stack>
     </Stack>
   );

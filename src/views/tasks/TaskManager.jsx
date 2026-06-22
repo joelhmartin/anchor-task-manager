@@ -318,6 +318,7 @@ export default function TaskManager() {
             groups={board.boardView?.groups || []}
             statusLabels={board.statusLabels}
             itemLabelsMap={board.itemLabelsMap}
+            loading={board.boardViewLoading}
             onItemClick={(it) => handleOpenItemDrawer(it)}
             dependencies={timelineDeps}
             baselineSnapshot={baselineSnapshot}
@@ -374,6 +375,7 @@ export default function TaskManager() {
 
             <BoardTable
               boardId={activeBoardId}
+              loading={board.boardViewLoading}
               groups={board.boardView?.groups || []}
               itemsByGroup={filteredItemsByGroup}
               assigneesByItem={board.boardView?.assignees_by_item || {}}
