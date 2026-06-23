@@ -5,6 +5,7 @@ import {
   Popper, Select, Skeleton, Stack, Tab, Tabs, TextField, Tooltip, Typography
 } from '@mui/material';
 import { IconClock, IconEye, IconPencil, IconPlus, IconRepeat, IconTrash, IconX } from '@tabler/icons-react';
+import ConfirmDialog from 'ui-component/extended/ConfirmDialog';
 import EmptyState from 'ui-component/extended/EmptyState';
 import LoadingButton from 'ui-component/extended/LoadingButton';
 import { useToast } from 'contexts/ToastContext';
@@ -64,6 +65,27 @@ export default function ItemDrawer({
   const [recurrence, setRecurrence] = useState(null);
   const [recurrenceLoading, setRecurrenceLoading] = useState(false);
   const [recurrenceMenuAnchor, setRecurrenceMenuAnchor] = useState(null);
+
+  // ── Destructive-action confirmation ──
+  // Each entry: { title, message, secondaryText?, confirmLabel, loadingLabel, action }
+  const [pendingConfirm, setPendingConfirm] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+
+  const handleConfirm = async () => {
+    if (!pendingConfirm || confirming) return;
+    setConfirming(true);
+    try {
+      await pendingConfirm.action();
+    } finally {
+      setConfirming(false);
+      setPendingConfirm(null);
+    }
+  };
+
+  const closeConfirm = () => {
+    if (confirming) return;
+    setPendingConfirm(null);
+  };
 
   const RECURRENCE_OPTIONS = [
     { value: 'daily', label: 'Daily' },
@@ -337,31 +359,55 @@ export default function ItemDrawer({
                 {predecessors.length > 0 && (
                   <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexWrap: 'wrap', gap: 0.5 }}>
                     <Typography variant="caption" color="text.secondary" sx={{ mr: 0.5 }}>Blocked by:</Typography>
-                    {predecessors.map((dep) => (
-                      <Chip
-                        key={dep.id}
-                        label={dep.predecessor_name || dep.predecessor_id}
-                        size="small"
-                        onDelete={() => handleRemoveDependency(dep.id, 'predecessor')}
-                        deleteIcon={<IconX size={14} />}
-                        sx={{ height: 24, fontSize: '0.75rem' }}
-                      />
-                    ))}
+                    {predecessors.map((dep) => {
+                      const name = dep.predecessor_name || dep.predecessor_id;
+                      return (
+                        <Chip
+                          key={dep.id}
+                          label={name}
+                          size="small"
+                          onDelete={() =>
+                            setPendingConfirm({
+                              title: 'Remove dependency?',
+                              message: <>Remove the &ldquo;blocked by&rdquo; link to <strong>{name}</strong>?</>,
+                              secondaryText: 'Both items remain; only the dependency is removed.',
+                              confirmLabel: 'Remove',
+                              loadingLabel: 'Removing…',
+                              action: () => handleRemoveDependency(dep.id, 'predecessor')
+                            })
+                          }
+                          deleteIcon={<IconX size={14} />}
+                          sx={{ height: 24, fontSize: '0.75rem' }}
+                        />
+                      );
+                    })}
                   </Stack>
                 )}
                 {successors.length > 0 && (
                   <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexWrap: 'wrap', gap: 0.5 }}>
                     <Typography variant="caption" color="text.secondary" sx={{ mr: 0.5 }}>Blocks:</Typography>
-                    {successors.map((dep) => (
-                      <Chip
-                        key={dep.id}
-                        label={dep.item_name || dep.item_id}
-                        size="small"
-                        onDelete={() => handleRemoveDependency(dep.id, 'successor')}
-                        deleteIcon={<IconX size={14} />}
-                        sx={{ height: 24, fontSize: '0.75rem' }}
-                      />
-                    ))}
+                    {successors.map((dep) => {
+                      const name = dep.item_name || dep.item_id;
+                      return (
+                        <Chip
+                          key={dep.id}
+                          label={name}
+                          size="small"
+                          onDelete={() =>
+                            setPendingConfirm({
+                              title: 'Remove dependency?',
+                              message: <>Remove the &ldquo;blocks&rdquo; link to <strong>{name}</strong>?</>,
+                              secondaryText: 'Both items remain; only the dependency is removed.',
+                              confirmLabel: 'Remove',
+                              loadingLabel: 'Removing…',
+                              action: () => handleRemoveDependency(dep.id, 'successor')
+                            })
+                          }
+                          deleteIcon={<IconX size={14} />}
+                          sx={{ height: 24, fontSize: '0.75rem' }}
+                        />
+                      );
+                    })}
                   </Stack>
                 )}
                 <Autocomplete
@@ -405,20 +451,34 @@ export default function ItemDrawer({
                 {links.length === 0 && !showLinkForm && (
                   <Typography variant="caption" color="text.disabled">No links</Typography>
                 )}
-                {links.map((link) => (
-                  <Stack key={link.id} direction="row" spacing={0.5} alignItems="center">
-                    <Typography variant="caption" color="text.secondary" sx={{ minWidth: 60, fontSize: '0.65rem' }}>
-                      {LINK_TYPE_LABELS[link.link_type] || link.link_type}:
-                    </Typography>
-                    <Chip
-                      label={`${link.linked_item?.name || 'Unknown'} (${link.linked_item?.board_name || ''})`}
-                      size="small"
-                      onDelete={() => handleRemoveLink(link.id)}
-                      deleteIcon={<IconX size={14} />}
-                      sx={{ height: 22, fontSize: '0.7rem', maxWidth: 200 }}
-                    />
-                  </Stack>
-                ))}
+                {links.map((link) => {
+                  const linkedName = link.linked_item?.name || 'Unknown';
+                  const linkedBoard = link.linked_item?.board_name || '';
+                  const linkTypeLabel = LINK_TYPE_LABELS[link.link_type] || link.link_type;
+                  return (
+                    <Stack key={link.id} direction="row" spacing={0.5} alignItems="center">
+                      <Typography variant="caption" color="text.secondary" sx={{ minWidth: 60, fontSize: '0.65rem' }}>
+                        {linkTypeLabel}:
+                      </Typography>
+                      <Chip
+                        label={`${linkedName} (${linkedBoard})`}
+                        size="small"
+                        onDelete={() =>
+                          setPendingConfirm({
+                            title: 'Remove link?',
+                            message: <>Remove the &ldquo;{linkTypeLabel}&rdquo; link to <strong>{linkedName}</strong>?</>,
+                            secondaryText: 'Both items remain; only the relationship is removed.',
+                            confirmLabel: 'Remove',
+                            loadingLabel: 'Removing…',
+                            action: () => handleRemoveLink(link.id)
+                          })
+                        }
+                        deleteIcon={<IconX size={14} />}
+                        sx={{ height: 22, fontSize: '0.7rem', maxWidth: 200 }}
+                      />
+                    </Stack>
+                  );
+                })}
                 {showLinkForm && (
                   <Stack spacing={0.75} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
                     <Select
@@ -480,7 +540,21 @@ export default function ItemDrawer({
                   sx={{ height: 26 }}
                 />
                 <Button size="small" onClick={(e) => setRecurrenceMenuAnchor(e.currentTarget)}>Change</Button>
-                <IconButton size="small" onClick={handleRemoveRecurrence} title="Remove recurrence" aria-label="Remove recurrence">
+                <IconButton
+                  size="small"
+                  onClick={() =>
+                    setPendingConfirm({
+                      title: 'Remove recurrence?',
+                      message: 'Stop automatically creating future copies of this item?',
+                      secondaryText: 'Existing items that were already generated by this schedule will not be deleted.',
+                      confirmLabel: 'Remove',
+                      loadingLabel: 'Removing…',
+                      action: () => handleRemoveRecurrence()
+                    })
+                  }
+                  title="Remove recurrence"
+                  aria-label="Remove recurrence"
+                >
                   <IconTrash size={14} />
                 </IconButton>
               </Stack>
@@ -525,6 +599,19 @@ export default function ItemDrawer({
           {drawerTab === 'time' && <TimeTab {...timeProps} activeItem={activeItem} />}
         </Stack>
       </Box>
+
+      <ConfirmDialog
+        open={Boolean(pendingConfirm)}
+        onClose={closeConfirm}
+        onConfirm={handleConfirm}
+        title={pendingConfirm?.title || ''}
+        message={pendingConfirm?.message}
+        secondaryText={pendingConfirm?.secondaryText}
+        confirmLabel={pendingConfirm?.confirmLabel || 'Remove'}
+        confirmColor="error"
+        loading={confirming}
+        loadingLabel={pendingConfirm?.loadingLabel || 'Removing…'}
+      />
     </Drawer>
   );
 }
