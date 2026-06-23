@@ -26,6 +26,7 @@ import {
 } from '@mui/material';
 import { green, orange, grey } from '@mui/material/colors';
 import { IconBolt, IconPencil, IconPlus, IconTrash } from '@tabler/icons-react';
+import ConfirmDialog from 'ui-component/extended/ConfirmDialog';
 import { getActionLabel, getTriggerLabel } from 'constants/automationTypes';
 import { AUTOMATION_NODE_COLORS } from 'constants/taskDefaults';
 
@@ -450,13 +451,19 @@ export default function FlowBuilder({ automation, steps = [], loading, onEditSte
   const theme = useTheme();
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [deleteConfirm, setDeleteConfirm] = useState({ open: false, stepId: null });
+
+  const requestDeleteStep = useCallback((stepId) => {
+    if (!stepId) return;
+    setDeleteConfirm({ open: true, stepId });
+  }, []);
 
   const callbacks = useMemo(() => ({
     onEdit: onEditStep,
-    onDelete: onDeleteStep,
+    onDelete: requestDeleteStep,
     onAdd: onAddStep,
     onEditTrigger
-  }), [onEditStep, onDeleteStep, onAddStep, onEditTrigger]);
+  }), [onEditStep, requestDeleteStep, onAddStep, onEditTrigger]);
 
   useEffect(() => {
     if (!automation || loading) return;
@@ -515,6 +522,21 @@ export default function FlowBuilder({ automation, steps = [], loading, onEditSte
           style={{ height: 80, width: 120 }}
         />
       </ReactFlow>
+
+      <ConfirmDialog
+        open={deleteConfirm.open}
+        onClose={() => setDeleteConfirm({ open: false, stepId: null })}
+        onConfirm={() => {
+          const id = deleteConfirm.stepId;
+          setDeleteConfirm({ open: false, stepId: null });
+          if (id) onDeleteStep?.(id);
+        }}
+        title="Delete Step"
+        message="Are you sure you want to delete this step? This action cannot be undone."
+        secondaryText="Any child steps nested below it will be deleted too."
+        confirmLabel="Delete"
+        confirmColor="error"
+      />
     </Box>
   );
 }
