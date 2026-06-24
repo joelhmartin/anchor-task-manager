@@ -187,8 +187,12 @@ export default function useItemUpdates(workspaceMembers, activeWorkspaceId, setE
     const caret = el?.selectionStart ?? text.length;
     const state = getMentionStateFromText(text, caret);
     if (!state.active) return;
-    const display = mentionDisplayName(member);
-    const token = `@[${display}](${member.user_id}) `;
+    // Strip `]` and newlines so the @[…](uuid) token can't be broken by a
+    // display name like "Smith (he/they)] x". The server regex stops at the
+    // first `]`, so any stray bracket would render as plain text and silently
+    // skip the mention fan-out.
+    const display = mentionDisplayName(member).replace(/[\]\r\n]/g, ' ').replace(/\s+/g, ' ').trim();
+    const token = `@[${display || 'teammate'}](${member.user_id}) `;
     const before = text.slice(0, state.atIndex);
     const after = text.slice(caret);
     const next = `${before}${token}${after}`;
@@ -251,6 +255,10 @@ export default function useItemUpdates(workspaceMembers, activeWorkspaceId, setE
     setUpdateViews({});
     setReplyTo(null);
     setReplyText('');
+    setMentionOpen(false);
+    setMentionQuery('');
+    setMentionOptions([]);
+    setMentionTarget('update');
   }, []);
 
   return {

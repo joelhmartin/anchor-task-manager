@@ -500,9 +500,17 @@ async function resolveMentionedUserIds({ content, workspaceId, actorUserId }) {
 
 async function fanOutUpdateNotifications({ itemId, workspaceId, actorUserId, content, replyToUserId = null }) {
   const mentioned = await resolveMentionedUserIds({ content, workspaceId, actorUserId });
-  const replyTargets = replyToUserId && replyToUserId !== actorUserId
-    ? [replyToUserId].filter((id) => !mentioned.includes(id))
-    : [];
+  let replyTargets = [];
+  if (replyToUserId && replyToUserId !== actorUserId && !mentioned.includes(replyToUserId)) {
+    const { rows: replyRows } = await query(
+      'SELECT id, role FROM users WHERE id = $1 LIMIT 1',
+      [replyToUserId]
+    );
+    const replyUser = replyRows[0];
+    if (replyUser && await assertWorkspaceAccess({ effRole: replyUser.role, userId: replyUser.id, workspaceId })) {
+      replyTargets = [replyUser.id];
+    }
+  }
   if (!mentioned.length && !replyTargets.length) return;
 
   const { rows: itemRows } = await query('SELECT id, name FROM task_items WHERE id = $1 LIMIT 1', [itemId]);
@@ -530,7 +538,6 @@ async function fanOutUpdateNotifications({ itemId, workspaceId, actorUserId, con
     );
   }
   for (const uid of replyTargets) {
-    // Reply-target lookup ran through assertWorkspaceAccess in the caller.
     sends.push(
       createNotification({
         userId: uid,
@@ -3426,6 +3433,12 @@ router.post('/items/:itemId/updates', async (req, res) => {
     return res.status(201).json({ update: rows[0] });
   } catch (err) {
     if (err instanceof z.ZodError) return res.status(400).json({ message: err.issues[0]?.message || 'Invalid payload' });
+    // If the parent comment was deleted between the lookup above and the INSERT,
+    // the FK on parent_update_id raises 23503 — surface that as the same 4xx the
+    // pre-check returns, not a 500.
+    if (err?.code === '23503' && err?.table === 'task_updates') {
+      return res.status(400).json({ message: 'Parent comment not found on this item' });
+    }
     console.error('[tasks:updates:create]', err);
     return res.status(500).json({ message: 'Unable to create update' });
   }
