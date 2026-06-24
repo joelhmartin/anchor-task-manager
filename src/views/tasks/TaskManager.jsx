@@ -216,6 +216,7 @@ export default function TaskManager() {
     time.handleLogTime(drawer.activeItem?.id, () => board.loadBoardView(activeBoardId));
 
   const handlePostUpdate = () => updates.handlePostUpdate(drawer.activeItem?.id);
+  const handlePostReply = () => updates.handlePostReply(drawer.activeItem?.id);
   const handleRefreshAiSummary = () => updates.handleRefreshAiSummary(drawer.activeItem?.id);
   const handleUploadFile = (file) => files.handleUploadFile(drawer.activeItem?.id, file);
 
@@ -498,12 +499,23 @@ export default function TaskManager() {
           mentionOpen: updates.mentionOpen,
           mentionOptions: updates.mentionOptions,
           mentionLoading: updates.mentionLoading,
+          mentionTarget: updates.mentionTarget,
+          openMentionPicker: updates.openMentionPicker,
           onPostUpdate: handlePostUpdate,
           getMentionStateFromText: updates.getMentionStateFromText,
           onSetMentionOpen: updates.setMentionOpen,
           onSetMentionQuery: updates.setMentionQuery,
           insertMention: updates.insertMention,
-          updateViews: updates.updateViews
+          updateViews: updates.updateViews,
+          replyTo: updates.replyTo,
+          replyText: updates.replyText,
+          onChangeReplyText: updates.setReplyText,
+          replyInputRef: updates.replyInputRef,
+          postingReply: updates.postingReply,
+          onBeginReply: updates.beginReply,
+          onCancelReply: updates.cancelReply,
+          onPostReply: handlePostReply,
+          workspaceMembers
         }}
         filesProps={{
           itemFiles: files.itemFiles,

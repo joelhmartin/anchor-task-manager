@@ -15,10 +15,18 @@ export default function useItemUpdates(workspaceMembers, activeWorkspaceId, setE
   const [newUpdateText, setNewUpdateText] = useState('');
   const [postingUpdate, setPostingUpdate] = useState(false);
   const updateInputRef = useRef(null);
+  // Reply drafts keyed by parent update id; null = no active reply form.
+  const [replyTo, setReplyTo] = useState(null);
+  const [replyText, setReplyText] = useState('');
+  const [postingReply, setPostingReply] = useState(false);
+  const replyInputRef = useRef(null);
+  // Mention state shared across the main and reply inputs; `target` records
+  // which input owns the open dropdown so insertMention writes to the right field.
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionOptions, setMentionOptions] = useState([]);
   const [mentionLoading, setMentionLoading] = useState(false);
+  const [mentionTarget, setMentionTarget] = useState('update'); // 'update' | 'reply'
   const [updateViews, setUpdateViews] = useState({});
   const [aiSummary, setAiSummary] = useState(null);
   const [aiSummaryMeta, setAiSummaryMeta] = useState({ is_stale: false, latest_update_at: null });
@@ -102,60 +110,120 @@ export default function useItemUpdates(workspaceMembers, activeWorkspaceId, setE
     }
   }, []);
 
+  const refreshAfterPost = useCallback(async (activeItemId) => {
+    const data = await fetchTaskItemUpdates(activeItemId);
+    const updates = data.updates || [];
+    setItemUpdates(updates);
+    setAiSummaryMeta((prev) => ({ ...prev, is_stale: true }));
+    if (updates.length) {
+      const updateIds = updates.map((u) => u.id);
+      markUpdatesViewed(updateIds).catch(() => {});
+      fetchUpdateViews(updateIds)
+        .then((views) => setUpdateViews(views))
+        .catch(() => {});
+    }
+  }, []);
+
   const handlePostUpdate = useCallback(async (activeItemId) => {
     if (!activeItemId || !newUpdateText.trim()) return;
     setPostingUpdate(true);
     setError('');
     try {
       await createTaskItemUpdate(activeItemId, { content: newUpdateText.trim() });
-      const data = await fetchTaskItemUpdates(activeItemId);
-      const updates = data.updates || [];
-      setItemUpdates(updates);
+      await refreshAfterPost(activeItemId);
       setNewUpdateText('');
-      setAiSummaryMeta((prev) => ({ ...prev, is_stale: true }));
-      if (updates.length) {
-        const updateIds = updates.map((u) => u.id);
-        markUpdatesViewed(updateIds).catch(() => {});
-        fetchUpdateViews(updateIds)
-          .then((views) => setUpdateViews(views))
-          .catch(() => {});
-      }
       toast.success('Update posted');
     } catch (err) {
       setError(err.message || 'Unable to post update');
     } finally {
       setPostingUpdate(false);
     }
-  }, [newUpdateText, setError, toast]);
+  }, [newUpdateText, setError, toast, refreshAfterPost]);
+
+  const handlePostReply = useCallback(async (activeItemId) => {
+    if (!activeItemId || !replyTo || !replyText.trim()) return;
+    setPostingReply(true);
+    setError('');
+    try {
+      await createTaskItemUpdate(activeItemId, {
+        content: replyText.trim(),
+        parent_update_id: replyTo
+      });
+      await refreshAfterPost(activeItemId);
+      setReplyText('');
+      setReplyTo(null);
+      toast.success('Reply posted');
+    } catch (err) {
+      setError(err.message || 'Unable to post reply');
+    } finally {
+      setPostingReply(false);
+    }
+  }, [replyTo, replyText, setError, toast, refreshAfterPost]);
 
   function getMentionStateFromText(text, caretIndex) {
     const before = String(text || '').slice(0, caretIndex);
     const at = before.lastIndexOf('@');
     if (at < 0) return { active: false };
     const afterAt = before.slice(at + 1);
+    // Don't reopen the picker when the caret sits inside an already-inserted
+    // `@[Name](uuid)` token — those carry a `[` right after the `@`.
+    if (afterAt.startsWith('[')) return { active: false };
     if (/\s/.test(afterAt)) return { active: false };
     return { active: true, query: afterAt, atIndex: at };
   }
 
-  const insertMention = useCallback((email) => {
-    const el = updateInputRef.current;
-    const text = newUpdateText || '';
+  const mentionDisplayName = useCallback((member) => {
+    if (!member) return '';
+    const name = clientLabel(member);
+    if (name && name.trim()) return name.trim();
+    return member.email || 'teammate';
+  }, []);
+
+  const insertMention = useCallback((member) => {
+    if (!member?.user_id) return;
+    const isReply = mentionTarget === 'reply';
+    const el = isReply ? replyInputRef.current : updateInputRef.current;
+    const text = isReply ? (replyText || '') : (newUpdateText || '');
     const caret = el?.selectionStart ?? text.length;
     const state = getMentionStateFromText(text, caret);
     if (!state.active) return;
+    const display = mentionDisplayName(member);
+    const token = `@[${display}](${member.user_id}) `;
     const before = text.slice(0, state.atIndex);
     const after = text.slice(caret);
-    const next = `${before}@${email} ${after}`;
-    setNewUpdateText(next);
+    const next = `${before}${token}${after}`;
+    if (isReply) setReplyText(next);
+    else setNewUpdateText(next);
     setMentionOpen(false);
     setMentionQuery('');
     requestAnimationFrame(() => {
-      if (!updateInputRef.current) return;
-      const pos = (before + `@${email} `).length;
-      updateInputRef.current.focus();
-      updateInputRef.current.setSelectionRange(pos, pos);
+      const target = isReply ? replyInputRef.current : updateInputRef.current;
+      if (!target) return;
+      const pos = (before + token).length;
+      target.focus();
+      target.setSelectionRange(pos, pos);
     });
-  }, [newUpdateText]);
+  }, [mentionTarget, newUpdateText, replyText, mentionDisplayName]);
+
+  const openMentionPicker = useCallback((target, query) => {
+    setMentionTarget(target);
+    setMentionQuery(query || '');
+    setMentionOpen(true);
+  }, []);
+
+  const beginReply = useCallback((parentUpdateId) => {
+    setReplyTo(parentUpdateId);
+    setReplyText('');
+  }, []);
+
+  const cancelReply = useCallback(() => {
+    setReplyTo(null);
+    setReplyText('');
+    if (mentionTarget === 'reply') {
+      setMentionOpen(false);
+      setMentionQuery('');
+    }
+  }, [mentionTarget]);
 
   const handleRefreshAiSummary = useCallback(async (activeItemId) => {
     if (!activeItemId) return;
@@ -181,11 +249,16 @@ export default function useItemUpdates(workspaceMembers, activeWorkspaceId, setE
     setAiSummaryMeta({ is_stale: false, latest_update_at: null });
     setAiSummaryLoading(true);
     setUpdateViews({});
+    setReplyTo(null);
+    setReplyText('');
   }, []);
 
   return {
     itemUpdates, itemUpdatesLoading, newUpdateText, setNewUpdateText, postingUpdate,
     updateInputRef, mentionOpen, setMentionOpen, mentionQuery, setMentionQuery, mentionOptions, mentionLoading,
+    mentionTarget, openMentionPicker,
+    replyTo, replyText, setReplyText, replyInputRef, postingReply,
+    beginReply, cancelReply, handlePostReply,
     updateViews,
     aiSummary, aiSummaryMeta, aiSummaryLoading, aiSummaryRefreshing,
     handlePostUpdate, getMentionStateFromText, insertMention, handleRefreshAiSummary,
