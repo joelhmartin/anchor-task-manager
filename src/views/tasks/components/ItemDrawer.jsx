@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Autocomplete, Avatar, AvatarGroup, Box, Button, Chip, CircularProgress, Divider, Drawer,
   IconButton, List, ListItemButton, ListItemText, Menu, MenuItem, Paper,
   Popper, Select, Skeleton, Stack, Tab, Tabs, TextField, Tooltip, Typography
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import { IconClock, IconEye, IconPencil, IconPlus, IconRepeat, IconTrash, IconX } from '@tabler/icons-react';
 import ConfirmDialog from 'ui-component/extended/ConfirmDialog';
 import EmptyState from 'ui-component/extended/EmptyState';
@@ -617,13 +618,185 @@ export default function ItemDrawer({
 }
 
 /* ─── Updates Tab ─── */
+// Matches the picker token `@[Display Name](uuid)` produced by the mention
+// picker. The split capture lets us walk text + tokens in order.
+const MENTION_TOKEN_PATTERN = /@\[([^\]]+)\]\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)/g;
+
+function renderUpdateContent(content, membersById) {
+  const text = String(content || '');
+  const segments = [];
+  let lastIndex = 0;
+  let match;
+  let segmentKey = 0;
+  MENTION_TOKEN_PATTERN.lastIndex = 0;
+  while ((match = MENTION_TOKEN_PATTERN.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ kind: 'text', value: text.slice(lastIndex, match.index), key: `t${segmentKey++}` });
+    }
+    const userId = match[2].toLowerCase();
+    const member = membersById?.[userId];
+    const displayName = member ? clientLabel(member) || member.email || match[1] : match[1];
+    segments.push({
+      kind: 'mention',
+      key: `m${segmentKey++}`,
+      displayName,
+      email: member?.email || null,
+      resolved: Boolean(member)
+    });
+    lastIndex = MENTION_TOKEN_PATTERN.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    segments.push({ kind: 'text', value: text.slice(lastIndex), key: `t${segmentKey++}` });
+  }
+  return segments;
+}
+
+function MentionSpan({ displayName, email, resolved }) {
+  const span = (
+    <Box
+      component="span"
+      sx={{
+        color: 'primary.main',
+        bgcolor: (theme) => alpha(theme.palette.primary.main, resolved ? 0.12 : 0.04),
+        borderRadius: 0.75,
+        px: 0.5,
+        fontWeight: 500
+      }}
+    >
+      @{displayName}
+    </Box>
+  );
+  if (!email) return span;
+  return (
+    <Tooltip title={email} arrow>
+      {span}
+    </Tooltip>
+  );
+}
+
+function UpdateBody({ content, membersById }) {
+  const segments = renderUpdateContent(content, membersById);
+  return (
+    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+      {segments.map((seg) =>
+        seg.kind === 'text' ? (
+          <span key={seg.key}>{seg.value}</span>
+        ) : (
+          <MentionSpan key={seg.key} displayName={seg.displayName} email={seg.email} resolved={seg.resolved} />
+        )
+      )}
+    </Typography>
+  );
+}
+
+function MentionPopperContent({ mentionLoading, mentionOptions, onPick }) {
+  return (
+    <Paper sx={{ mt: 0.5, maxHeight: 220, overflow: 'auto' }}>
+      {mentionLoading ? (
+        <Box sx={{ p: 1.25 }}>
+          <CircularProgress size={18} />
+        </Box>
+      ) : (
+        <List dense disablePadding>
+          {mentionOptions.length === 0 && (
+            <ListItemText
+              primary={
+                <Typography variant="body2" color="text.secondary">
+                  No matches
+                </Typography>
+              }
+              sx={{ px: 1.5, py: 1 }}
+            />
+          )}
+          {mentionOptions.slice(0, 10).map((m) => {
+            const name = clientLabel(m);
+            const primary = name || m.email || 'Teammate';
+            const secondaryParts = [];
+            if (name && m.email) secondaryParts.push(m.email);
+            if (m.user_role) secondaryParts.push(m.user_role);
+            return (
+              <ListItemButton
+                key={m.user_id}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => onPick(m)}
+              >
+                <ListItemText primary={primary} secondary={secondaryParts.join(' • ') || undefined} />
+              </ListItemButton>
+            );
+          })}
+        </List>
+      )}
+    </Paper>
+  );
+}
+
 function UpdatesTab({
   itemUpdates, itemUpdatesLoading, newUpdateText, onChangeUpdateText,
   postingUpdate, updateInputRef, mentionOpen, mentionOptions, mentionLoading,
+  mentionTarget, openMentionPicker,
   onPostUpdate, getMentionStateFromText, onSetMentionOpen, onSetMentionQuery,
   insertMention, updateViews,
-  aiProps, activeItem
+  replyTo, replyText, onChangeReplyText, replyInputRef, postingReply,
+  onBeginReply, onCancelReply, onPostReply, workspaceMembers,
+  activeItem
 }) {
+  const membersById = useMemo(() => {
+    const map = {};
+    (workspaceMembers || []).forEach((m) => {
+      if (m?.user_id) map[String(m.user_id).toLowerCase()] = m;
+    });
+    return map;
+  }, [workspaceMembers]);
+
+  // Group flat updates into top-level + replies threads.
+  const threads = useMemo(() => {
+    const tops = [];
+    const repliesByParent = new Map();
+    (itemUpdates || []).forEach((u) => {
+      if (u.parent_update_id) {
+        const list = repliesByParent.get(u.parent_update_id) || [];
+        list.push(u);
+        repliesByParent.set(u.parent_update_id, list);
+      } else {
+        tops.push(u);
+      }
+    });
+    return tops.map((parent) => ({
+      parent,
+      replies: (repliesByParent.get(parent.id) || []).slice().sort((a, b) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      )
+    }));
+  }, [itemUpdates]);
+
+  const handleMainTextChange = (e) => {
+    const next = e.target.value;
+    onChangeUpdateText(next);
+    const caret = e.target.selectionStart ?? next.length;
+    const state = getMentionStateFromText(next, caret);
+    if (state.active) {
+      openMentionPicker('update', state.query || '');
+    } else if (mentionTarget === 'update') {
+      onSetMentionOpen(false);
+      onSetMentionQuery('');
+    }
+  };
+
+  const handleReplyTextChange = (e) => {
+    const next = e.target.value;
+    onChangeReplyText(next);
+    const caret = e.target.selectionStart ?? next.length;
+    const state = getMentionStateFromText(next, caret);
+    if (state.active) {
+      openMentionPicker('reply', state.query || '');
+    } else if (mentionTarget === 'reply') {
+      onSetMentionOpen(false);
+      onSetMentionQuery('');
+    }
+  };
+
+  const mentionAnchor = mentionTarget === 'reply' ? replyInputRef.current : updateInputRef.current;
+
   return (
     <Stack spacing={1}>
       <Stack spacing={1}>
@@ -631,67 +804,15 @@ function UpdatesTab({
           multiline
           minRows={3}
           label="Post an update"
-          helperText="Tip: mention a teammate with @email (e.g. @alex@anchorcorps.com) to notify them."
+          helperText="Tip: type @ to mention a teammate from the workspace member picker."
           value={newUpdateText}
           inputRef={updateInputRef}
-          onChange={(e) => {
-            const next = e.target.value;
-            onChangeUpdateText(next);
-            const caret = e.target.selectionStart ?? next.length;
-            const state = getMentionStateFromText(next, caret);
-            if (state.active) {
-              onSetMentionOpen(true);
-              onSetMentionQuery(state.query || '');
-            } else {
-              onSetMentionOpen(false);
-              onSetMentionQuery('');
-            }
-          }}
+          onChange={handleMainTextChange}
           onBlur={() => {
+            if (mentionTarget !== 'update') return;
             setTimeout(() => onSetMentionOpen(false), 150);
           }}
         />
-        <Popper
-          open={mentionOpen}
-          anchorEl={updateInputRef.current}
-          placement="bottom-start"
-          sx={{ zIndex: 1500, width: updateInputRef.current?.clientWidth || 360 }}
-        >
-          <Paper sx={{ mt: 0.5, maxHeight: 220, overflow: 'auto' }}>
-            {mentionLoading ? (
-              <Box sx={{ p: 1.25 }}>
-                <CircularProgress size={18} />
-              </Box>
-            ) : (
-              <List dense disablePadding>
-                {mentionOptions.length === 0 && (
-                  <ListItemText
-                    primary={
-                      <Typography variant="body2" color="text.secondary">
-                        No matches
-                      </Typography>
-                    }
-                    sx={{ px: 1.5, py: 1 }}
-                  />
-                )}
-                {mentionOptions.slice(0, 10).map((m) => {
-                  const name = clientLabel(m);
-                  const primary = m.email || m.user_id;
-                  const secondary = name ? `${name}${m.user_role ? ` • ${m.user_role}` : ''}` : m.user_role || '';
-                  return (
-                    <ListItemButton
-                      key={m.user_id}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => insertMention(primary)}
-                    >
-                      <ListItemText primary={primary} secondary={secondary} />
-                    </ListItemButton>
-                  );
-                })}
-              </List>
-            )}
-          </Paper>
-        </Popper>
         <LoadingButton
           variant="contained"
           onClick={onPostUpdate}
@@ -702,6 +823,19 @@ function UpdatesTab({
           Post update
         </LoadingButton>
       </Stack>
+
+      <Popper
+        open={mentionOpen && Boolean(mentionAnchor)}
+        anchorEl={mentionAnchor}
+        placement="bottom-start"
+        sx={{ zIndex: 1500, width: mentionAnchor?.clientWidth || 360 }}
+      >
+        <MentionPopperContent
+          mentionLoading={mentionLoading}
+          mentionOptions={mentionOptions}
+          onPick={insertMention}
+        />
+      </Popper>
 
       <Typography variant="subtitle2">Feed</Typography>
       {itemUpdatesLoading ? (
@@ -716,65 +850,126 @@ function UpdatesTab({
         </Stack>
       ) : (
         <Stack spacing={1}>
-          {itemUpdates.length === 0 && (
+          {threads.length === 0 && (
             <EmptyState title="No updates yet." sx={{ py: 2 }} />
           )}
-          {itemUpdates.map((u) => {
-            const viewers = updateViews[u.id] || [];
-            return (
-              <Box key={u.id} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
-                <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
-                  <Stack>
-                    <Typography variant="caption" color="text.secondary">
-                      {u.author_name || 'Unknown'}
-                      {u.created_at && (
-                        <span style={{ marginLeft: 8, opacity: 0.7 }}>
-                          {new Date(u.created_at).toLocaleString(undefined, {
-                            month: 'short',
-                            day: 'numeric',
-                            hour: 'numeric',
-                            minute: '2-digit'
-                          })}
-                        </span>
-                      )}
-                    </Typography>
-                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                      {u.content}
-                    </Typography>
-                  </Stack>
-                  {viewers.length > 0 && (
-                    <Tooltip
-                      title={
-                        <Stack spacing={0.5} sx={{ p: 0.5 }}>
-                          <Typography variant="caption" fontWeight={600}>
-                            Seen by {viewers.length}
-                          </Typography>
-                          {viewers.map((v) => (
-                            <Stack key={v.user_id} direction="row" spacing={1} alignItems="center">
-                              <Avatar src={v.avatar_url} sx={{ width: 20, height: 20, fontSize: 10 }}>
-                                {(v.user_name || '?')[0]}
-                              </Avatar>
-                              <Typography variant="caption">{v.user_name}</Typography>
-                            </Stack>
-                          ))}
-                        </Stack>
-                      }
-                      placement="left"
-                      arrow
+          {threads.map(({ parent, replies }) => (
+            <Box key={parent.id} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+              <UpdateRow
+                update={parent}
+                viewers={updateViews[parent.id] || []}
+                membersById={membersById}
+              />
+              {replies.length > 0 && (
+                <Stack spacing={1} sx={{ mt: 1, pl: 2, borderLeft: '2px solid', borderColor: 'divider' }}>
+                  {replies.map((reply) => (
+                    <Box
+                      key={reply.id}
+                      sx={{ p: 0.75, bgcolor: (theme) => alpha(theme.palette.action.hover, 0.6), borderRadius: 1 }}
                     >
-                      <IconButton size="small" sx={{ p: 0.25 }} aria-label={`${viewers.length} ${viewers.length === 1 ? 'viewer' : 'viewers'}`}>
-                        <IconEye size={14} />
-                        <Typography variant="caption" sx={{ ml: 0.5, fontSize: '0.7rem' }}>
-                          {viewers.length}
-                        </Typography>
-                      </IconButton>
-                    </Tooltip>
-                  )}
+                      <UpdateRow
+                        update={reply}
+                        viewers={updateViews[reply.id] || []}
+                        membersById={membersById}
+                      />
+                    </Box>
+                  ))}
                 </Stack>
-              </Box>
-            );
-          })}
+              )}
+              {replyTo === parent.id ? (
+                <Stack spacing={0.75} sx={{ mt: 1, pl: 2 }}>
+                  <TextField
+                    multiline
+                    minRows={2}
+                    size="small"
+                    label="Reply"
+                    placeholder="Write a reply…"
+                    value={replyText}
+                    inputRef={replyInputRef}
+                    onChange={handleReplyTextChange}
+                    onBlur={() => {
+                      if (mentionTarget !== 'reply') return;
+                      setTimeout(() => onSetMentionOpen(false), 150);
+                    }}
+                    autoFocus
+                  />
+                  <Stack direction="row" spacing={1} justifyContent="flex-end">
+                    <Button size="small" onClick={onCancelReply} disabled={postingReply}>
+                      Cancel
+                    </Button>
+                    <LoadingButton
+                      size="small"
+                      variant="contained"
+                      onClick={onPostReply}
+                      loading={postingReply}
+                      loadingLabel="Posting…"
+                      disabled={!replyText.trim()}
+                    >
+                      Post reply
+                    </LoadingButton>
+                  </Stack>
+                </Stack>
+              ) : (
+                <Box sx={{ mt: 0.5 }}>
+                  <Button size="small" onClick={() => onBeginReply(parent.id)} sx={{ textTransform: 'none' }}>
+                    Reply
+                  </Button>
+                </Box>
+              )}
+            </Box>
+          ))}
         </Stack>
+      )}
+    </Stack>
+  );
+}
+
+function UpdateRow({ update, viewers, membersById }) {
+  return (
+    <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+      <Stack sx={{ minWidth: 0, flex: 1 }}>
+        <Typography variant="caption" color="text.secondary">
+          {update.author_name || 'Unknown'}
+          {update.created_at && (
+            <span style={{ marginLeft: 8, opacity: 0.7 }}>
+              {new Date(update.created_at).toLocaleString(undefined, {
+                month: 'short',
+                day: 'numeric',
+                hour: 'numeric',
+                minute: '2-digit'
+              })}
+            </span>
+          )}
+        </Typography>
+        <UpdateBody content={update.content} membersById={membersById} />
+      </Stack>
+      {viewers.length > 0 && (
+        <Tooltip
+          title={
+            <Stack spacing={0.5} sx={{ p: 0.5 }}>
+              <Typography variant="caption" fontWeight={600}>
+                Seen by {viewers.length}
+              </Typography>
+              {viewers.map((v) => (
+                <Stack key={v.user_id} direction="row" spacing={1} alignItems="center">
+                  <Avatar src={v.avatar_url} sx={{ width: 20, height: 20, fontSize: 10 }}>
+                    {(v.user_name || '?')[0]}
+                  </Avatar>
+                  <Typography variant="caption">{v.user_name}</Typography>
+                </Stack>
+              ))}
+            </Stack>
+          }
+          placement="left"
+          arrow
+        >
+          <IconButton size="small" sx={{ p: 0.25 }} aria-label={`${viewers.length} ${viewers.length === 1 ? 'viewer' : 'viewers'}`}>
+            <IconEye size={14} />
+            <Typography variant="caption" sx={{ ml: 0.5, fontSize: '0.7rem' }}>
+              {viewers.length}
+            </Typography>
+          </IconButton>
+        </Tooltip>
       )}
     </Stack>
   );
