@@ -186,7 +186,8 @@ const MIGRATIONS = [
   'task-baselines.sql',
   'task-time-tracking-v2.sql',
   'task-webhooks.sql',
-  'task-subitem-workflow.sql'
+  'task-subitem-workflow.sql',
+  'task-updates-threading.sql'
 ];
 
 async function runMigrationFile(file) {
