@@ -54,6 +54,14 @@ export function registerTaskEventSubscribers() {
     });
   }
 
+  // Threaded replies emit `update.reply_created` so the activity feed can
+  // distinguish them later; route them to the same `update_created` automation
+  // trigger so existing "update posted" rules still fire for reply comments.
+  onTaskEvent('update.reply_created', async (event) => {
+    if (event.actor_type === 'automation') return;
+    await evaluateRules('update_created', event);
+  });
+
   // --- Activity log subscribers ---
 
   onTaskEvent('item.created', async (event) => {

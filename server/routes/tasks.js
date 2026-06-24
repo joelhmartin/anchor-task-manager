@@ -69,7 +69,8 @@ const itemUpdateSchema = z.object({
 });
 
 const updateCreateSchema = z.object({
-  content: z.string().min(1).max(20000)
+  content: z.string().min(1).max(20000),
+  parent_update_id: z.string().uuid().optional().nullable()
 });
 
 const timeEntryCreateSchema = z.object({
@@ -434,7 +435,8 @@ async function isDoneStatus(status, boardId) {
 
 function extractMentionEmails(text = '') {
   const input = String(text || '');
-  // Mentions are @email@example.com
+  // Legacy mentions: @email@example.com (kept so comments authored before the
+  // user-picker rollout still notify on edit or re-render).
   const regex = /@([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g;
   const emails = new Set();
   let match;
@@ -447,26 +449,69 @@ function extractMentionEmails(text = '') {
   return Array.from(emails);
 }
 
-async function notifyMentionedUsers({ itemId, workspaceId, actorUserId, content }) {
-  const emails = extractMentionEmails(content);
-  if (!emails.length) return;
+// Current mentions use the picker token `@[Display Name](uuid)` so the server
+// can resolve to a user_id without depending on the rendered name.
+const MENTION_USER_TOKEN_RE = /@\[[^\]]+\]\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)/g;
 
+function extractMentionUserIds(text = '') {
+  const input = String(text || '');
+  const ids = new Set();
+  MENTION_USER_TOKEN_RE.lastIndex = 0;
+  let match;
+  while ((match = MENTION_USER_TOKEN_RE.exec(input)) !== null) {
+    const id = String(match[1] || '').toLowerCase();
+    if (id) ids.add(id);
+  }
+  return Array.from(ids);
+}
+
+async function resolveMentionedUserIds({ content, workspaceId, actorUserId }) {
+  const userIds = extractMentionUserIds(content);
+  const emails = extractMentionEmails(content);
+  if (!userIds.length && !emails.length) return [];
+
+  const params = [];
+  const clauses = [];
+  if (userIds.length) {
+    params.push(userIds);
+    clauses.push(`id = ANY($${params.length}::uuid[])`);
+  }
+  if (emails.length) {
+    params.push(emails);
+    clauses.push(`lower(email) = ANY($${params.length})`);
+  }
   const { rows: users } = await query(
     `SELECT id, email, role
      FROM users
-     WHERE lower(email) = ANY($1)`,
-    [emails]
+     WHERE ${clauses.join(' OR ')}`,
+    params
   );
-  if (!users.length) return;
+  if (!users.length) return [];
 
-  // Only notify users who can access this workspace (avoid leaking references).
+  // Only return users who can access this workspace (avoid leaking references).
   const allowedIds = [];
   for (const u of users) {
     if (!u?.id || u.id === actorUserId) continue;
     const ok = await assertWorkspaceAccess({ effRole: u.role, userId: u.id, workspaceId });
     if (ok) allowedIds.push(u.id);
   }
-  if (!allowedIds.length) return;
+  return allowedIds;
+}
+
+async function fanOutUpdateNotifications({ itemId, workspaceId, actorUserId, content, replyToUserId = null }) {
+  const mentioned = await resolveMentionedUserIds({ content, workspaceId, actorUserId });
+  let replyTargets = [];
+  if (replyToUserId && replyToUserId !== actorUserId && !mentioned.includes(replyToUserId)) {
+    const { rows: replyRows } = await query(
+      'SELECT id, role FROM users WHERE id = $1 LIMIT 1',
+      [replyToUserId]
+    );
+    const replyUser = replyRows[0];
+    if (replyUser && await assertWorkspaceAccess({ effRole: replyUser.role, userId: replyUser.id, workspaceId })) {
+      replyTargets = [replyUser.id];
+    }
+  }
+  if (!mentioned.length && !replyTargets.length) return;
 
   const { rows: itemRows } = await query('SELECT id, name FROM task_items WHERE id = $1 LIMIT 1', [itemId]);
   const itemName = itemRows[0]?.name || 'Task item';
@@ -475,8 +520,9 @@ async function notifyMentionedUsers({ itemId, workspaceId, actorUserId, content 
     ? `/tasks?pane=boards&board=${encodeURIComponent(boardId)}&item=${encodeURIComponent(itemId)}`
     : '/tasks?pane=boards';
 
-  await Promise.all(
-    allowedIds.map((uid) =>
+  const sends = [];
+  for (const uid of mentioned) {
+    sends.push(
       createNotification({
         userId: uid,
         title: 'You were mentioned in a task update',
@@ -489,8 +535,25 @@ async function notifyMentionedUsers({ itemId, workspaceId, actorUserId, content 
           actor_user_id: actorUserId
         }
       })
-    )
-  );
+    );
+  }
+  for (const uid of replyTargets) {
+    sends.push(
+      createNotification({
+        userId: uid,
+        title: 'Someone replied to your comment',
+        body: `${itemName}`,
+        linkUrl,
+        meta: {
+          source: 'task_update_reply',
+          item_id: itemId,
+          workspace_id: workspaceId,
+          actor_user_id: actorUserId
+        }
+      })
+    );
+  }
+  await Promise.all(sends);
 }
 
 async function getWorkspaceIdForBoard(boardId) {
@@ -3267,28 +3330,46 @@ router.get('/items/:itemId/updates', async (req, res) => {
     const limit = Math.max(1, Math.min(200, parseInt(req.query.limit, 10) || 50));
     const before = req.query.before || null;
 
+    // Paginate top-level updates only; replies travel with their parent.
     let cursorClause = '';
     const params = [itemId];
     if (before) {
       cursorClause = `AND (u.created_at, u.id) < (SELECT u2.created_at, u2.id FROM task_updates u2 WHERE u2.id = $2)`;
       params.push(before);
     }
-    params.push(limit + 1); // fetch one extra to detect has_more
+    params.push(limit + 1);
 
-    const { rows } = await query(
+    const { rows: parents } = await query(
       `SELECT u.*, COALESCE(us.first_name || ' ' || us.last_name, 'Unknown') AS author_name
        FROM task_updates u
        LEFT JOIN users us ON us.id = u.user_id
-       WHERE u.item_id = $1 ${cursorClause}
+       WHERE u.item_id = $1 AND u.parent_update_id IS NULL ${cursorClause}
        ORDER BY u.created_at DESC, u.id DESC
        LIMIT $${params.length}`,
       params
     );
-    const hasMore = rows.length > limit;
-    const page = hasMore ? rows.slice(0, limit) : rows;
+    const hasMore = parents.length > limit;
+    const pageParents = hasMore ? parents.slice(0, limit) : parents;
+
+    let replies = [];
+    if (pageParents.length) {
+      const parentIds = pageParents.map((p) => p.id);
+      const { rows } = await query(
+        `SELECT u.*, COALESCE(us.first_name || ' ' || us.last_name, 'Unknown') AS author_name
+         FROM task_updates u
+         LEFT JOIN users us ON us.id = u.user_id
+         WHERE u.parent_update_id = ANY($1::uuid[])
+         ORDER BY u.created_at ASC, u.id ASC`,
+        [parentIds]
+      );
+      replies = rows;
+    }
+
+    // Flat array (top-level + replies). Frontend groups via parent_update_id.
+    const updates = [...pageParents, ...replies];
     return res.json({
-      updates: page,
-      pagination: { has_more: hasMore, next_cursor: hasMore ? page[page.length - 1]?.id : null }
+      updates,
+      pagination: { has_more: hasMore, next_cursor: hasMore ? pageParents[pageParents.length - 1]?.id : null }
     });
   } catch (err) {
     console.error('[tasks:updates:list]', err);
@@ -3307,33 +3388,57 @@ router.post('/items/:itemId/updates', async (req, res) => {
     if (!ok) return res.status(403).json({ message: 'Insufficient permissions' });
 
     const payload = updateCreateSchema.parse(req.body);
+    let parentAuthorId = null;
+    if (payload.parent_update_id) {
+      const { rows: parentRows } = await query(
+        'SELECT id, item_id, parent_update_id, user_id FROM task_updates WHERE id = $1',
+        [payload.parent_update_id]
+      );
+      const parent = parentRows[0];
+      if (!parent || parent.item_id !== itemId) {
+        return res.status(400).json({ message: 'Parent comment not found on this item' });
+      }
+      // Single-level threading: replies attach to top-level comments only.
+      if (parent.parent_update_id) {
+        return res.status(400).json({ message: 'Replies cannot themselves be replied to' });
+      }
+      parentAuthorId = parent.user_id || null;
+    }
+
     const { rows } = await query(
-      `INSERT INTO task_updates (item_id, user_id, content)
-       VALUES ($1, $2, $3)
+      `INSERT INTO task_updates (item_id, user_id, content, parent_update_id)
+       VALUES ($1, $2, $3, $4)
        RETURNING *`,
-      [itemId, req.user.id, payload.content]
+      [itemId, req.user.id, payload.content, payload.parent_update_id || null]
     );
-    // Fire-and-forget mention notifications.
-    notifyMentionedUsers({
+    // Fire-and-forget mention + reply notifications.
+    fanOutUpdateNotifications({
       itemId,
       workspaceId,
       actorUserId: req.user.id,
-      content: payload.content
+      content: payload.content,
+      replyToUserId: parentAuthorId
     }).catch((err) => console.error('[tasks:mentions]', err));
     const updBoardId = await getBoardIdForItem(itemId);
     emitTaskEvent({
-      event_type: 'update.created',
+      event_type: payload.parent_update_id ? 'update.reply_created' : 'update.created',
       workspace_id: workspaceId,
       board_id: updBoardId,
       item_id: itemId,
       entity_type: 'update',
       entity_id: rows[0].id,
       actor_id: req.user.id,
-      new_value: { content: rows[0].content }
+      new_value: { content: rows[0].content, parent_update_id: rows[0].parent_update_id }
     });
     return res.status(201).json({ update: rows[0] });
   } catch (err) {
     if (err instanceof z.ZodError) return res.status(400).json({ message: err.issues[0]?.message || 'Invalid payload' });
+    // If the parent comment was deleted between the lookup above and the INSERT,
+    // the FK on parent_update_id raises 23503 — surface that as the same 4xx the
+    // pre-check returns, not a 500.
+    if (err?.code === '23503' && err?.table === 'task_updates') {
+      return res.status(400).json({ message: 'Parent comment not found on this item' });
+    }
     console.error('[tasks:updates:create]', err);
     return res.status(500).json({ message: 'Unable to create update' });
   }
