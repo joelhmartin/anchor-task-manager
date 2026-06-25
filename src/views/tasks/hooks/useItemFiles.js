@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { fetchTaskItemFiles, uploadTaskItemFile } from 'api/tasks';
+import { fetchTaskItemFiles, uploadTaskItemFile, deleteTaskFile } from 'api/tasks';
 import { useToast } from 'contexts/ToastContext';
 
 export default function useItemFiles(setError) {
@@ -40,6 +40,30 @@ export default function useItemFiles(setError) {
     }
   }, [setError, toast]);
 
+  const handleDeleteFile = useCallback(async (activeItemId, fileId) => {
+    if (!fileId) return;
+    setError('');
+    // Optimistic: remove from the list immediately; restore on failure.
+    let previous;
+    setItemFiles((current) => {
+      previous = current;
+      return current.filter((f) => f.id !== fileId);
+    });
+    try {
+      await deleteTaskFile(fileId);
+      toast.success('File deleted');
+      if (activeItemId) {
+        const data = await fetchTaskItemFiles(activeItemId);
+        setItemFiles(data.files || []);
+      }
+    } catch (err) {
+      if (previous) setItemFiles(previous);
+      const message = err?.response?.data?.message || err.message || 'Unable to delete file';
+      setError(message);
+      toast.error(message);
+    }
+  }, [setError, toast]);
+
   const reset = useCallback(() => {
     setItemFiles([]);
     setItemFilesLoading(true);
@@ -47,6 +71,6 @@ export default function useItemFiles(setError) {
 
   return {
     itemFiles, itemFilesLoading, uploadingFile,
-    handleUploadFile, loadFiles, reset
+    handleUploadFile, handleDeleteFile, loadFiles, reset
   };
 }

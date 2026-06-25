@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Autocomplete, Avatar, AvatarGroup, Box, Button, Chip, CircularProgress, Divider, Drawer,
-  IconButton, List, ListItemButton, ListItemText, Menu, MenuItem, Paper,
-  Popper, Select, Skeleton, Stack, Tab, Tabs, TextField, Tooltip, Typography
+  Autocomplete, Avatar, AvatarGroup, Box, Button, Chip, CircularProgress, Dialog, DialogContent,
+  DialogTitle, Divider, Drawer, IconButton, List, ListItemButton, ListItemText, Menu, MenuItem,
+  Paper, Popper, Select, Skeleton, Stack, Tab, Tabs, TextField, Tooltip, Typography
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
-import { IconClock, IconEye, IconPencil, IconPlus, IconRepeat, IconTrash, IconX } from '@tabler/icons-react';
+import {
+  IconClock, IconEye, IconFile, IconFileTypePdf, IconPencil, IconPhoto, IconPlus, IconRepeat,
+  IconTrash, IconX
+} from '@tabler/icons-react';
 import ConfirmDialog from 'ui-component/extended/ConfirmDialog';
 import EmptyState from 'ui-component/extended/EmptyState';
 import LoadingButton from 'ui-component/extended/LoadingButton';
@@ -14,7 +17,8 @@ import { getStatusColor } from 'constants/taskDefaults';
 import {
   fetchItemDependencies, addItemDependency, removeItemDependency,
   fetchItemRecurrence, setItemRecurrence, removeItemRecurrence,
-  fetchItemLinks, createItemLink, deleteItemLink, searchItems
+  fetchItemLinks, createItemLink, deleteItemLink, searchItems,
+  fetchTaskFileContent
 } from 'api/tasks';
 import { clampNonNegInt, normalizeHm } from '../hooks/useItemTimeTracking';
 import LabelPicker, { LabelChips } from './LabelPicker';
@@ -596,7 +600,13 @@ export default function ItemDrawer({
           </Tabs>
 
           {drawerTab === 'updates' && <UpdatesTab {...updatesProps} aiProps={aiProps} activeItem={activeItem} />}
-          {drawerTab === 'files' && <FilesTab {...filesProps} activeItem={activeItem} />}
+          {drawerTab === 'files' && (
+            <FilesTab
+              {...filesProps}
+              activeItem={activeItem}
+              setPendingConfirm={setPendingConfirm}
+            />
+          )}
           {drawerTab === 'time' && <TimeTab {...timeProps} activeItem={activeItem} />}
         </Stack>
       </Box>
@@ -976,7 +986,112 @@ function UpdateRow({ update, viewers, membersById }) {
 }
 
 /* ─── Files Tab ─── */
-function FilesTab({ itemFiles, itemFilesLoading, uploadingFile, onUploadFile, activeItem }) {
+const PREVIEWABLE_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+
+function isImageContentType(file) {
+  return PREVIEWABLE_IMAGE_TYPES.has(file?.content_type);
+}
+
+function isPdfContentType(file) {
+  return file?.content_type === 'application/pdf';
+}
+
+function canPreviewFile(file) {
+  return isImageContentType(file) || isPdfContentType(file);
+}
+
+function isAuthenticatedFileUrl(file) {
+  return typeof file?.file_url === 'string' && file.file_url.startsWith('/api/');
+}
+
+function fileTypeIcon(file) {
+  if (isImageContentType(file)) return <IconPhoto size={18} />;
+  if (isPdfContentType(file)) return <IconFileTypePdf size={18} />;
+  return <IconFile size={18} />;
+}
+
+function formatFileSize(bytes) {
+  if (!bytes || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function FilesTab({
+  itemFiles, itemFilesLoading, uploadingFile, onUploadFile, onDeleteFile,
+  setPendingConfirm, activeItem
+}) {
+  const toast = useToast();
+  const [previewFile, setPreviewFile] = useState(null);
+  const [previewBlobUrl, setPreviewBlobUrl] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+
+  // Revoke the object URL when it's replaced or the tab unmounts so the blob
+  // doesn't linger in memory.
+  useEffect(() => {
+    return () => {
+      if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
+    };
+  }, [previewBlobUrl]);
+
+  const closePreview = () => {
+    if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
+    setPreviewBlobUrl(null);
+    setPreviewFile(null);
+    setPreviewError('');
+  };
+
+  const openPreview = async (file) => {
+    if (!isAuthenticatedFileUrl(file)) {
+      // Legacy on-disk file — let the browser fetch via static serving.
+      window.open(file.file_url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    setPreviewFile(file);
+    setPreviewError('');
+    setPreviewLoading(true);
+    try {
+      const blob = await fetchTaskFileContent(file.id);
+      setPreviewBlobUrl(URL.createObjectURL(blob));
+    } catch (err) {
+      setPreviewError(err?.response?.data?.message || err?.message || 'Unable to load preview');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const openInNewTab = async (file) => {
+    if (!isAuthenticatedFileUrl(file)) {
+      window.open(file.file_url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    try {
+      const blob = await fetchTaskFileContent(file.id);
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank', 'noopener,noreferrer');
+      // Give the new tab time to load before we drop the blob.
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err?.message || 'Unable to open file');
+    }
+  };
+
+  const requestDelete = (file) => {
+    if (!setPendingConfirm) {
+      onDeleteFile?.(file.id);
+      return;
+    }
+    setPendingConfirm({
+      title: 'Delete file?',
+      message: <>Permanently delete <strong>{file.file_name || 'this file'}</strong>?</>,
+      secondaryText: 'This removes the file for everyone on this item.',
+      confirmLabel: 'Delete',
+      loadingLabel: 'Deleting…',
+      action: () => onDeleteFile?.(file.id)
+    });
+  };
+
   return (
     <Stack spacing={1}>
       <Typography variant="subtitle2">Files</Typography>
@@ -995,19 +1110,67 @@ function FilesTab({ itemFiles, itemFilesLoading, uploadingFile, onUploadFile, ac
           {!itemFiles.length && (
             <EmptyState title="No files yet." sx={{ py: 2 }} />
           )}
-          {itemFiles.map((f) => (
-            <Box key={f.id} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
-              <Typography variant="body2">{f.file_name || 'File'}</Typography>
-              <Typography variant="caption" color="text.secondary">
-                {f.uploaded_by_name || 'Unknown'}
-              </Typography>
-              <Box sx={{ mt: 0.5 }}>
-                <Button size="small" variant="outlined" component="a" href={f.file_url} target="_blank" rel="noreferrer">
-                  Open
-                </Button>
+          {itemFiles.map((f) => {
+            const fileName = f.file_name || 'File';
+            const sizeLabel = formatFileSize(f.size_bytes);
+            const meta = [f.uploaded_by_name || 'Unknown', sizeLabel].filter(Boolean).join(' • ');
+            const showPreview = canPreviewFile(f) && isAuthenticatedFileUrl(f);
+            return (
+              <Box
+                key={f.id}
+                sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}
+              >
+                <Stack direction="row" spacing={1} alignItems="flex-start">
+                  <Box
+                    sx={{
+                      mt: '2px', color: 'text.secondary', flex: '0 0 auto',
+                      display: 'flex', alignItems: 'center'
+                    }}
+                    aria-hidden="true"
+                  >
+                    {fileTypeIcon(f)}
+                  </Box>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>
+                      {fileName}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {meta}
+                    </Typography>
+                    <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, flexWrap: 'wrap', rowGap: 0.5 }}>
+                      {showPreview && (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<IconEye size={14} />}
+                          onClick={() => openPreview(f)}
+                        >
+                          Preview
+                        </Button>
+                      )}
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => openInNewTab(f)}
+                      >
+                        Open
+                      </Button>
+                      <Tooltip title="Delete file">
+                        <IconButton
+                          size="small"
+                          onClick={() => requestDelete(f)}
+                          aria-label={`Delete ${fileName}`}
+                          color="error"
+                        >
+                          <IconTrash size={14} />
+                        </IconButton>
+                      </Tooltip>
+                    </Stack>
+                  </Box>
+                </Stack>
               </Box>
-            </Box>
-          ))}
+            );
+          })}
         </Stack>
       )}
 
@@ -1023,7 +1186,75 @@ function FilesTab({ itemFiles, itemFilesLoading, uploadingFile, onUploadFile, ac
           }}
         />
       </Button>
+
+      <FilePreviewDialog
+        file={previewFile}
+        blobUrl={previewBlobUrl}
+        loading={previewLoading}
+        error={previewError}
+        onClose={closePreview}
+      />
     </Stack>
+  );
+}
+
+function FilePreviewDialog({ file, blobUrl, loading, error, onClose }) {
+  const open = Boolean(file);
+  const isPdf = isPdfContentType(file);
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth="lg"
+      fullWidth
+      aria-labelledby="task-file-preview-title"
+    >
+      <DialogTitle
+        id="task-file-preview-title"
+        sx={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 1, pr: 1
+        }}
+      >
+        <Typography variant="subtitle1" sx={{ wordBreak: 'break-word' }}>
+          {file?.file_name || 'Preview'}
+        </Typography>
+        <IconButton onClick={onClose} aria-label="Close preview" size="small">
+          <IconX size={18} />
+        </IconButton>
+      </DialogTitle>
+      <DialogContent
+        dividers
+        sx={{
+          p: 0, minHeight: 360, bgcolor: 'background.default',
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}
+      >
+        {loading ? (
+          <Box sx={{ p: 4 }} role="status" aria-live="polite" aria-busy="true">
+            <CircularProgress size={32} aria-label="Loading preview" />
+          </Box>
+        ) : error ? (
+          <Typography variant="body2" color="error" sx={{ p: 4 }}>
+            {error}
+          </Typography>
+        ) : blobUrl ? (
+          isPdf ? (
+            <iframe
+              src={blobUrl}
+              title={file?.file_name || 'PDF preview'}
+              style={{ width: '100%', height: '75vh', border: 0 }}
+            />
+          ) : (
+            <img
+              src={blobUrl}
+              alt={file?.file_name || 'Image preview'}
+              style={{ maxWidth: '100%', maxHeight: '75vh', objectFit: 'contain' }}
+            />
+          )
+        ) : null}
+      </DialogContent>
+    </Dialog>
   );
 }
 
