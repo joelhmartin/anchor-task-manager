@@ -4,7 +4,7 @@ schema_version: 2
 
 # Task Manager Polish — State
 
-Routine A reads this file for the queue and known_issues only. Merge state lives in GitHub (Routine A's Step 0 queries `gh pr list` for open and merged polish PRs). There is no automated review/merge routine — the user reviews and merges manually.
+Routine A reads this file for the queue and known_issues only. Merge state lives in GitHub (Routine A's Step 0 queries `gh pr list` for open and merged polish PRs). Routine A opens one polish PR per weekday (08:00 UTC); a companion **Routine B** runs later the same weekday (14:00 UTC) to address the CodeRabbit/Codex findings and squash-merge it. Deploys stay manual.
 
 See the full aspect spec in `docs/refactoring/task-manager-aspects.md`.
 
