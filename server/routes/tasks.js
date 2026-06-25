@@ -2,8 +2,6 @@ import express from 'express';
 import { z } from 'zod';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
-import crypto from 'crypto';
 
 import { query, getClient } from '../db.js';
 import { logSecurityEvent, SecurityEventTypes, SecurityEventCategories } from '../services/security/index.js';
@@ -304,19 +302,15 @@ function getEffectiveRole(req) {
   return req.user?.effective_role || req.user?.role;
 }
 
-const uploadRoot = path.resolve(process.cwd(), process.env.UPLOAD_DIR || 'uploads');
-const taskFilesDir = path.join(uploadRoot, 'tasks');
-if (!fs.existsSync(taskFilesDir)) fs.mkdirSync(taskFilesDir, { recursive: true });
-
 function safeFilename(name) {
   return String(name || 'upload').replace(/[^\w.-]+/g, '_');
 }
 
 // Allowlist of MIME types accepted for task file attachments. SVG is
 // deliberately excluded because it can carry executable script. HTML and
-// other markup that browsers render inline are also excluded. The disk-
-// storage backend is a Phase 3 follow-up (Cloud Run's filesystem is
-// ephemeral; see phase-3-files-delete-preview in the aspect spec).
+// other markup that browsers render inline are also excluded. Bytes land in
+// the `task_files.data` BYTEA column and are served from the authenticated
+// /api/tasks/files/:id/content endpoint — Cloud Run's filesystem stays unused.
 const ALLOWED_TASK_FILE_MIME_TYPES = new Set([
   'image/jpeg',
   'image/png',
@@ -373,13 +367,7 @@ function taskFileFilter(_req, file, cb) {
 }
 
 const uploadTaskFile = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, taskFilesDir),
-    filename: (_req, file, cb) => {
-      const rand = crypto.randomBytes(8).toString('hex');
-      cb(null, `${Date.now()}_${rand}_${safeFilename(file.originalname)}`);
-    }
-  }),
+  storage: multer.memoryStorage(),
   fileFilter: taskFileFilter,
   limits: { fileSize: 25 * 1024 * 1024 } // 25MB
 });
@@ -3532,7 +3520,9 @@ router.get('/items/:itemId/files', async (req, res) => {
     params.push(limit + 1);
 
     const { rows } = await query(
-      `SELECT f.*, COALESCE(us.first_name || ' ' || us.last_name, 'Unknown') AS uploaded_by_name
+      `SELECT f.id, f.item_id, f.update_id, f.uploaded_by, f.file_url, f.file_name,
+              f.content_type, f.size_bytes, f.created_at,
+              COALESCE(us.first_name || ' ' || us.last_name, 'Unknown') AS uploaded_by_name
        FROM task_files f
        LEFT JOIN users us ON us.id = f.uploaded_by
        WHERE f.item_id = $1 ${cursorClause}
@@ -3563,14 +3553,43 @@ router.post('/items/:itemId/files', uploadTaskFileMiddleware, async (req, res) =
     if (!ok) return res.status(403).json({ message: 'Insufficient permissions' });
     if (!req.file) return res.status(400).json({ message: 'File is required' });
 
-    const url = `/uploads/tasks/${req.file.filename}`.replace(/\\/g, '/');
-    const fileName = req.file.originalname || req.file.filename;
-    const { rows } = await query(
-      `INSERT INTO task_files (item_id, uploaded_by, file_url, file_name)
-       VALUES ($1, $2, $3, $4)
-       RETURNING *`,
-      [itemId, req.user.id, url, fileName]
-    );
+    const fileName = req.file.originalname || 'upload';
+    const contentType = req.file.mimetype || 'application/octet-stream';
+    const buffer = req.file.buffer;
+    const sizeBytes = buffer?.length ?? 0;
+
+    // INSERT with a placeholder file_url (column is NOT NULL), then UPDATE with
+    // the row's own id so the URL points at the authenticated download route.
+    // Wrapped in a transaction so a row can never persist with the placeholder.
+    const client = await getClient();
+    let savedFile;
+    try {
+      await client.query('BEGIN');
+      const { rows: inserted } = await client.query(
+        `INSERT INTO task_files (item_id, uploaded_by, file_url, file_name, data, content_type, size_bytes)
+         VALUES ($1, $2, '', $3, $4, $5, $6)
+         RETURNING id`,
+        [itemId, req.user.id, fileName, buffer, contentType, sizeBytes]
+      );
+      const newId = inserted[0].id;
+      const fileUrl = `/api/tasks/files/${newId}/content`;
+      const { rows: updated } = await client.query(
+        `UPDATE task_files
+           SET file_url = $1
+         WHERE id = $2
+         RETURNING id, item_id, update_id, uploaded_by, file_url, file_name,
+                   content_type, size_bytes, created_at`,
+        [fileUrl, newId]
+      );
+      await client.query('COMMIT');
+      savedFile = updated[0];
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
     const fileBoardId = await getBoardIdForItem(itemId);
     emitTaskEvent({
       event_type: 'file.uploaded',
@@ -3578,14 +3597,63 @@ router.post('/items/:itemId/files', uploadTaskFileMiddleware, async (req, res) =
       board_id: fileBoardId,
       item_id: itemId,
       entity_type: 'file',
-      entity_id: rows[0].id,
+      entity_id: savedFile.id,
       actor_id: req.user.id,
       new_value: { file_name: fileName }
     });
-    return res.status(201).json({ file: rows[0] });
+    return res.status(201).json({ file: savedFile });
   } catch (err) {
     console.error('[tasks:files:upload]', err);
     return res.status(500).json({ message: 'Unable to upload file' });
+  }
+});
+
+// Content types we'll display inline (image lightbox / PDF embed). Everything
+// else gets Content-Disposition: attachment so the browser downloads instead of
+// rendering — defends against e.g. an HTML masquerading as text/plain.
+const INLINE_CONTENT_TYPES = new Set([
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif',
+  'application/pdf'
+]);
+
+router.get('/files/:fileId/content', async (req, res) => {
+  const eff = getEffectiveRole(req);
+  const userId = req.user.id;
+  const { fileId } = req.params;
+  try {
+    const { rows: [file] } = await query(
+      `SELECT f.id, f.file_name, f.content_type, f.size_bytes, f.data,
+              b.workspace_id
+         FROM task_files f
+         JOIN task_items i ON i.id = f.item_id
+         JOIN task_groups g ON g.id = i.group_id
+         JOIN task_boards b ON b.id = g.board_id
+        WHERE f.id = $1`,
+      [fileId]
+    );
+    if (!file) return res.status(404).json({ message: 'File not found' });
+    const ok = await assertWorkspaceAccess({ effRole: eff, userId, workspaceId: file.workspace_id });
+    if (!ok) return res.status(403).json({ message: 'Insufficient permissions' });
+    if (!file.data) {
+      // Pre-migration row whose bytes lived on Cloud Run's ephemeral filesystem
+      // and were lost on restart. The legacy /uploads/... URL on the row may
+      // still resolve via express.static if the file happens to be present.
+      return res.status(410).json({ message: 'File contents are no longer available' });
+    }
+
+    const contentType = file.content_type || 'application/octet-stream';
+    const disposition = INLINE_CONTENT_TYPES.has(contentType) ? 'inline' : 'attachment';
+    const safeName = safeFilename(file.file_name);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', file.data.length);
+    res.setHeader('Content-Disposition', `${disposition}; filename="${safeName}"`);
+    // Private so shared caches/CDNs never serve PHI-adjacent attachments to
+    // another tenant. The browser can still cache for the session.
+    res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+    return res.end(file.data);
+  } catch (err) {
+    console.error('[tasks:files:content]', err);
+    return res.status(500).json({ message: 'Unable to load file' });
   }
 });
 
