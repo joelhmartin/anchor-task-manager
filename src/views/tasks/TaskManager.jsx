@@ -219,6 +219,7 @@ export default function TaskManager() {
   const handlePostReply = () => updates.handlePostReply(drawer.activeItem?.id);
   const handleRefreshAiSummary = () => updates.handleRefreshAiSummary(drawer.activeItem?.id);
   const handleUploadFile = (file) => files.handleUploadFile(drawer.activeItem?.id, file);
+  const handleDeleteFile = (fileId) => files.handleDeleteFile(drawer.activeItem?.id, fileId);
 
   // Deep-link effect: open item from URL
   useEffect(() => {
@@ -521,7 +522,8 @@ export default function TaskManager() {
           itemFiles: files.itemFiles,
           itemFilesLoading: files.itemFilesLoading,
           uploadingFile: files.uploadingFile,
-          onUploadFile: handleUploadFile
+          onUploadFile: handleUploadFile,
+          onDeleteFile: handleDeleteFile
         }}
         timeProps={{
           timeEntries: time.timeEntries,

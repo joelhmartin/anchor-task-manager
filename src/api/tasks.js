@@ -114,6 +114,13 @@ export function uploadTaskItemFile(itemId, file) {
     .then((res) => res.data.file);
 }
 
+// Authenticated download — the access token rides on the axios Authorization
+// header, so `<img src="…">` / `<iframe src="…">` can't fetch the bytes
+// directly. Callers turn the returned Blob into an object URL.
+export function fetchTaskFileContent(fileId) {
+  return client.get(`/tasks/files/${fileId}/content`, { responseType: 'blob' }).then((res) => res.data);
+}
+
 export function fetchTaskItemTimeEntries(itemId, { limit, before } = {}) {
   const params = {};
   if (limit !== undefined) params.limit = limit;
