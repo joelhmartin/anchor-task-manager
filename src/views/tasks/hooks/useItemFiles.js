@@ -43,7 +43,9 @@ export default function useItemFiles(setError) {
   const handleDeleteFile = useCallback(async (activeItemId, fileId) => {
     if (!fileId) return;
     setError('');
-    // Optimistic: remove from the list immediately; restore on failure.
+    // Optimistic: remove from the list immediately; restore only if the delete
+    // itself fails. A post-delete refresh failure shouldn't resurrect a row
+    // that's already gone server-side.
     let previous;
     setItemFiles((current) => {
       previous = current;
@@ -51,16 +53,21 @@ export default function useItemFiles(setError) {
     });
     try {
       await deleteTaskFile(fileId);
-      toast.success('File deleted');
-      if (activeItemId) {
-        const data = await fetchTaskItemFiles(activeItemId);
-        setItemFiles(data.files || []);
-      }
     } catch (err) {
       if (previous) setItemFiles(previous);
       const message = err?.response?.data?.message || err.message || 'Unable to delete file';
       setError(message);
       toast.error(message);
+      return;
+    }
+    toast.success('File deleted');
+    if (activeItemId) {
+      try {
+        const data = await fetchTaskItemFiles(activeItemId);
+        setItemFiles(data.files || []);
+      } catch {
+        // Refresh is best-effort — the optimistic list is already correct.
+      }
     }
   }, [setError, toast]);
 

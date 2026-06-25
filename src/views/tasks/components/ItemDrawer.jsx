@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Autocomplete, Avatar, AvatarGroup, Box, Button, Chip, CircularProgress, Dialog, DialogContent,
   DialogTitle, Divider, Drawer, IconButton, List, ListItemButton, ListItemText, Menu, MenuItem,
@@ -1026,6 +1026,11 @@ function FilesTab({
   const [previewBlobUrl, setPreviewBlobUrl] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
+  // Sequence guard: every openPreview/closePreview bumps the token; in-flight
+  // fetches check their snapshot against the current token and revoke + bail if
+  // the user has since closed or switched files. Without this, a slow fetch can
+  // resolve after the dialog is closed and overwrite state with a stale blob.
+  const previewTokenRef = useRef(0);
 
   // Revoke the object URL when it's replaced or the tab unmounts so the blob
   // doesn't linger in memory.
@@ -1036,10 +1041,12 @@ function FilesTab({
   }, [previewBlobUrl]);
 
   const closePreview = () => {
+    previewTokenRef.current += 1;
     if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
     setPreviewBlobUrl(null);
     setPreviewFile(null);
     setPreviewError('');
+    setPreviewLoading(false);
   };
 
   const openPreview = async (file) => {
@@ -1048,16 +1055,24 @@ function FilesTab({
       window.open(file.file_url, '_blank', 'noopener,noreferrer');
       return;
     }
+    const token = previewTokenRef.current + 1;
+    previewTokenRef.current = token;
     setPreviewFile(file);
     setPreviewError('');
     setPreviewLoading(true);
     try {
       const blob = await fetchTaskFileContent(file.id);
-      setPreviewBlobUrl(URL.createObjectURL(blob));
+      const url = URL.createObjectURL(blob);
+      if (previewTokenRef.current !== token) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      setPreviewBlobUrl(url);
     } catch (err) {
+      if (previewTokenRef.current !== token) return;
       setPreviewError(err?.response?.data?.message || err?.message || 'Unable to load preview');
     } finally {
-      setPreviewLoading(false);
+      if (previewTokenRef.current === token) setPreviewLoading(false);
     }
   };
 
@@ -1069,8 +1084,22 @@ function FilesTab({
     try {
       const blob = await fetchTaskFileContent(file.id);
       const url = URL.createObjectURL(blob);
-      window.open(url, '_blank', 'noopener,noreferrer');
-      // Give the new tab time to load before we drop the blob.
+      if (canPreviewFile(file)) {
+        // Image/PDF: open inline in a new tab so the user can view in the browser.
+        window.open(url, '_blank', 'noopener,noreferrer');
+      } else {
+        // Non-previewable types (docx/zip/csv/…): the server intended a download
+        // with the original filename. Going through `window.open(blob)` would
+        // hide both, so trigger a real download with the file_name preserved.
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = file.file_name || 'download';
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+      // Give the new tab / download time to start before we drop the blob.
       setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (err) {
       toast.error(err?.response?.data?.message || err?.message || 'Unable to open file');

@@ -25,7 +25,6 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 // Silence verbose logging in production to reduce Cloud Logging costs.
 if (NODE_ENV === 'production') console.log = () => {};
 const RUN_MIGRATIONS = process.env.RUN_MIGRATIONS_ON_START ?? (NODE_ENV === 'production' ? 'true' : 'false');
-const UPLOAD_DIR = path.resolve(process.cwd(), process.env.UPLOAD_DIR || 'uploads');
 const CLIENT_BUILD_DIR = path.resolve(process.cwd(), 'dist');
 const EMAIL_ASSETS_DIR = path.resolve(process.cwd(), 'server', 'assets', 'email');
 
@@ -60,7 +59,8 @@ const baseCspDirectives = {
   'connect-src': ["'self'", 'https://fonts.googleapis.com', 'https://fonts.gstatic.com', 'https://cdn.jsdelivr.net'],
   'worker-src': ["'self'", 'blob:', 'https://cdn.jsdelivr.net'],
   'child-src': ["'self'", 'blob:'],
-  'frame-src': ["'self'", ...CSP_FRAME_SRC]
+  // blob: lets the task drawer iframe authenticated PDF previews (object URL of a fetched blob).
+  'frame-src': ["'self'", 'blob:', ...CSP_FRAME_SRC]
 };
 
 // ---------------------------------------------------------------------------
@@ -117,8 +117,9 @@ app.get('/api/hub/users/:id/avatar', (req, res) => {
   return res.redirect(302, `${main}/api/hub/users/${encodeURIComponent(req.params.id)}/avatar${qs}`);
 });
 
-// Task file attachments are written by multer to <UPLOAD_DIR>/tasks and served here.
-app.use('/uploads', express.static(UPLOAD_DIR));
+// Task file attachments are stored in task_files.data (BYTEA) and served through
+// the authenticated /api/tasks/files/:id/content endpoint. No public /uploads
+// static handler — that would re-introduce the auth bypass the BYTEA migration closed.
 app.use('/email-assets', express.static(EMAIL_ASSETS_DIR));
 // Serve Vite build assets (also covered by the catch-all static below in prod).
 app.use('/assets', express.static(path.join(process.cwd(), 'dist', 'assets')));
