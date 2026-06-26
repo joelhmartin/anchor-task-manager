@@ -279,6 +279,10 @@ const subitemUpdateSchema = z.object({
   start_date: z.string().optional().nullable()
 });
 
+const subitemReorderSchema = z.object({
+  subitem_ids: z.array(z.string().uuid()).min(1)
+});
+
 // Status label management schema
 const colorHexSchema = z.string().regex(/^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/);
 
@@ -3698,11 +3702,24 @@ router.get('/items/:itemId/subitems', async (req, res) => {
       return res.status(403).json({ message: 'Admin role required to view archived subitems' });
     }
     const { rows } = await query(
-      `SELECT *
-       FROM task_subitems
-       WHERE parent_item_id = $1
-         AND ($2::boolean OR archived_at IS NULL)
-       ORDER BY created_at DESC`,
+      `SELECT s.*,
+              COALESCE(
+                (SELECT json_agg(json_build_object(
+                   'user_id', u.id,
+                   'email', u.email,
+                   'first_name', u.first_name,
+                   'last_name', u.last_name,
+                   'avatar_url', u.avatar_url
+                 ) ORDER BY u.email)
+                 FROM task_subitem_assignees sa
+                 JOIN users u ON u.id = sa.user_id
+                 WHERE sa.subitem_id = s.id),
+                '[]'::json
+              ) AS assignees
+       FROM task_subitems s
+       WHERE s.parent_item_id = $1
+         AND ($2::boolean OR s.archived_at IS NULL)
+       ORDER BY s.position ASC NULLS LAST, s.created_at ASC, s.id ASC`,
       [itemId, includeArchived]
     );
     return res.json({ subitems: rows });
@@ -3724,8 +3741,14 @@ router.post('/items/:itemId/subitems', async (req, res) => {
 
     const payload = subitemCreateSchema.parse(req.body);
     const { rows } = await query(
-      `INSERT INTO task_subitems (parent_item_id, name, status, due_date)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO task_subitems (parent_item_id, name, status, due_date, position)
+       VALUES (
+         $1, $2, $3, $4,
+         COALESCE(
+           (SELECT MAX(position) + 1 FROM task_subitems WHERE parent_item_id = $1),
+           0
+         )
+       )
        RETURNING *`,
       [itemId, payload.name.trim(), payload.status ?? 'To Do', payload.due_date ?? null]
     );
@@ -3740,7 +3763,9 @@ router.post('/items/:itemId/subitems', async (req, res) => {
       actor_id: req.user.id,
       new_value: { name: rows[0].name, status: rows[0].status }
     });
-    return res.status(201).json({ subitem: rows[0] });
+    // Newly-created subitems have no assignees yet — surface an empty array so
+    // the frontend can render uniformly without a follow-up fetch.
+    return res.status(201).json({ subitem: { ...rows[0], assignees: [] } });
   } catch (err) {
     if (err instanceof z.ZodError) return res.status(400).json({ message: err.issues[0]?.message || 'Invalid payload' });
     console.error('[tasks:subitems:create]', err);
@@ -3881,6 +3906,72 @@ router.post('/subitems/:subitemId/restore', async (req, res) => {
   } catch (err) {
     console.error('[tasks:subitems:restore]', err);
     return res.status(500).json({ message: 'Unable to restore subitem' });
+  }
+});
+
+// POST /items/:itemId/subitems/reorder — rewrite the position column for every
+// non-archived subitem under this parent to match the supplied ordering. Any
+// subitem ids missing from the payload keep their relative order but are
+// appended to the tail; ids that don't belong to this parent are ignored.
+router.post('/items/:itemId/subitems/reorder', async (req, res) => {
+  const eff = getEffectiveRole(req);
+  const userId = req.user.id;
+  const { itemId } = req.params;
+  const client = await getClient();
+  try {
+    const workspaceId = await getWorkspaceIdForItem(itemId);
+    if (!workspaceId) return res.status(404).json({ message: 'Item not found' });
+    const ok = await assertWorkspaceAccess({ effRole: eff, userId, workspaceId });
+    if (!ok) return res.status(403).json({ message: 'Insufficient permissions' });
+
+    const payload = subitemReorderSchema.parse(req.body);
+
+    await client.query('BEGIN');
+
+    // Lock the non-archived siblings for this parent so concurrent reorders
+    // can't interleave and produce gaps or duplicates.
+    const { rows: siblings } = await client.query(
+      `SELECT id FROM task_subitems
+       WHERE parent_item_id = $1 AND archived_at IS NULL
+       ORDER BY position ASC NULLS LAST, created_at ASC, id ASC
+       FOR UPDATE`,
+      [itemId]
+    );
+    const siblingIds = siblings.map((s) => s.id);
+    const siblingSet = new Set(siblingIds);
+
+    // Take payload ids that belong to this parent, in payload order. Then
+    // append any siblings the client didn't include in their tail order.
+    const requestedIds = payload.subitem_ids.filter((id) => siblingSet.has(id));
+    const requestedSet = new Set(requestedIds);
+    const tail = siblingIds.filter((id) => !requestedSet.has(id));
+    const finalIds = [...requestedIds, ...tail];
+
+    for (let idx = 0; idx < finalIds.length; idx++) {
+      await client.query('UPDATE task_subitems SET position = $2 WHERE id = $1', [finalIds[idx], idx]);
+    }
+
+    const subReorderBoardId = await getBoardIdForItem(itemId);
+    emitTaskEvent({
+      event_type: 'subitem.reordered',
+      workspace_id: workspaceId,
+      board_id: subReorderBoardId,
+      item_id: itemId,
+      entity_type: 'subitem',
+      entity_id: itemId,
+      actor_id: req.user.id,
+      new_value: { order: finalIds }
+    });
+
+    await client.query('COMMIT');
+    return res.json({ ok: true, order: finalIds });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (err instanceof z.ZodError) return res.status(400).json({ message: err.issues[0]?.message || 'Invalid payload' });
+    console.error('[tasks:subitems:reorder]', err);
+    return res.status(500).json({ message: 'Unable to reorder subitems' });
+  } finally {
+    client.release();
   }
 });
 
