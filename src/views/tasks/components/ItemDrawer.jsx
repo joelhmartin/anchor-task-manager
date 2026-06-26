@@ -6,9 +6,14 @@ import {
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import {
-  IconClock, IconEye, IconFile, IconFileTypePdf, IconPencil, IconPhoto, IconPlus, IconRepeat,
-  IconTrash, IconX
+  IconCheck, IconChecks, IconClock, IconEye, IconFile, IconFileTypePdf, IconGripVertical,
+  IconPencil, IconPhoto, IconPlus, IconRepeat, IconTrash, IconX
 } from '@tabler/icons-react';
+import { DndContext, closestCenter, PointerSensor, KeyboardSensor, useSensor, useSensors } from '@dnd-kit/core';
+import {
+  SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import ConfirmDialog from 'ui-component/extended/ConfirmDialog';
 import EmptyState from 'ui-component/extended/EmptyState';
 import LoadingButton from 'ui-component/extended/LoadingButton';
@@ -33,6 +38,8 @@ export default function ItemDrawer({
   filesProps,
   // Time
   timeProps,
+  // Subitems
+  subitemsProps,
   // Assignees
   assigneesProps,
   // AI summary
@@ -595,11 +602,21 @@ export default function ItemDrawer({
 
           <Tabs value={drawerTab} onChange={(_e, v) => onChangeTab(v)}>
             <Tab value="updates" label="Updates" />
+            <Tab value="subitems" label="Subitems" />
             <Tab value="files" label="Files" />
             <Tab value="time" label="Time Tracking" />
           </Tabs>
 
           {drawerTab === 'updates' && <UpdatesTab {...updatesProps} aiProps={aiProps} activeItem={activeItem} />}
+          {drawerTab === 'subitems' && (
+            <SubitemsTab
+              {...subitemsProps}
+              activeItem={activeItem}
+              statusLabels={statusLabels}
+              workspaceMembers={workspaceMembers}
+              setPendingConfirm={setPendingConfirm}
+            />
+          )}
           {drawerTab === 'files' && (
             <FilesTab
               {...filesProps}
@@ -624,6 +641,421 @@ export default function ItemDrawer({
         loadingLabel={pendingConfirm?.loadingLabel || 'Removing…'}
       />
     </Drawer>
+  );
+}
+
+/* ─── Subitems Tab ─── */
+
+function memberLabel(m) {
+  if (!m) return 'Unknown';
+  const full = [m.first_name, m.last_name].filter(Boolean).join(' ').trim();
+  return full || m.email || 'Unknown';
+}
+
+function memberInitials(m) {
+  const label = memberLabel(m);
+  const parts = label.split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0][0]?.toUpperCase() || '?';
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+function isDoneStatus(status, statusLabels) {
+  if (!status) return false;
+  const match = (statusLabels || []).find((sl) => sl.label === status);
+  if (match) return Boolean(match.is_done_state);
+  return status === 'Done';
+}
+
+function SortableSubitemRow({
+  subitem, statusLabels, workspaceMembers,
+  onToggleDone, onRename, onSetStatus,
+  onAddAssignee, onRemoveAssignee, onArchive
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: subitem.id
+  });
+  const [editingName, setEditingName] = useState(false);
+  const [draftName, setDraftName] = useState(subitem.name || '');
+  const [assigneeAnchor, setAssigneeAnchor] = useState(null);
+
+  // Keep the draft in sync if the row name changes from outside (e.g. server
+  // refresh), but only when we're not actively editing — otherwise we'd
+  // clobber whatever the user is typing.
+  useEffect(() => {
+    if (!editingName) setDraftName(subitem.name || '');
+  }, [subitem.name, editingName]);
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1
+  };
+
+  const done = isDoneStatus(subitem.status, statusLabels);
+  const statusColor = getStatusColor(subitem.status, statusLabels);
+
+  const commitName = () => {
+    setEditingName(false);
+    const trimmed = draftName.trim();
+    if (!trimmed || trimmed === subitem.name) {
+      setDraftName(subitem.name || '');
+      return;
+    }
+    onRename(subitem.id, trimmed);
+  };
+
+  const cancelName = () => {
+    setDraftName(subitem.name || '');
+    setEditingName(false);
+  };
+
+  const assignees = subitem.assignees || [];
+  const assignedIds = new Set(assignees.map((a) => a.user_id || a.id));
+  const candidateMembers = (workspaceMembers || []).filter(
+    (m) => m?.user_id && !assignedIds.has(m.user_id)
+  );
+
+  return (
+    <Box
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 0.75,
+        px: 0.75,
+        py: 0.5,
+        border: '1px solid',
+        borderColor: 'divider',
+        borderRadius: 1.5,
+        bgcolor: 'background.paper',
+        '&:hover': { borderColor: 'primary.light' }
+      }}
+    >
+      <Box
+        {...listeners}
+        sx={{ cursor: 'grab', display: 'flex', alignItems: 'center', color: 'text.disabled', touchAction: 'none' }}
+        aria-label="Drag to reorder subitem"
+        role="button"
+        tabIndex={-1}
+      >
+        <IconGripVertical size={16} />
+      </Box>
+
+      <Tooltip title={done ? 'Mark as not done' : 'Mark as done'}>
+        <IconButton
+          size="small"
+          onClick={() => onToggleDone(subitem)}
+          aria-label={done ? 'Mark subitem as not done' : 'Mark subitem as done'}
+          sx={{
+            border: '1.5px solid',
+            borderColor: done ? 'success.main' : 'divider',
+            bgcolor: done ? 'success.main' : 'transparent',
+            color: done ? 'common.white' : 'text.disabled',
+            width: 22, height: 22, p: 0,
+            '&:hover': { bgcolor: done ? 'success.dark' : 'action.hover' }
+          }}
+        >
+          {done ? <IconCheck size={14} /> : null}
+        </IconButton>
+      </Tooltip>
+
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        {editingName ? (
+          <TextField
+            size="small"
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); commitName(); }
+              else if (e.key === 'Escape') { e.preventDefault(); cancelName(); }
+            }}
+            autoFocus
+            fullWidth
+            inputProps={{ 'aria-label': 'Subitem name' }}
+          />
+        ) : (
+          <Tooltip title="Click to rename">
+            <Typography
+              variant="body2"
+              onClick={() => setEditingName(true)}
+              sx={{
+                cursor: 'text',
+                px: 0.5, py: 0.25, borderRadius: 0.5,
+                textDecoration: done ? 'line-through' : 'none',
+                color: done ? 'text.disabled' : 'text.primary',
+                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                '&:hover': { bgcolor: 'action.hover' }
+              }}
+            >
+              {subitem.name || '(untitled)'}
+            </Typography>
+          </Tooltip>
+        )}
+      </Box>
+
+      <Select
+        size="small"
+        value={statusLabels.some((sl) => sl.label === subitem.status) ? subitem.status : ''}
+        displayEmpty
+        onChange={(e) => onSetStatus(subitem.id, e.target.value)}
+        renderValue={() => (
+          <Chip
+            label={subitem.status || 'Set status'}
+            size="small"
+            sx={{
+              height: 20, fontSize: '0.7rem',
+              bgcolor: statusColor.bg, color: statusColor.fg,
+              '& .MuiChip-label': { px: 0.75 }
+            }}
+          />
+        )}
+        sx={{
+          minWidth: 110, maxWidth: 140,
+          '& .MuiSelect-select': { py: 0.25, pr: '24px !important' },
+          '.MuiOutlinedInput-notchedOutline': { borderColor: 'transparent' },
+          '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: 'divider' }
+        }}
+        inputProps={{ 'aria-label': 'Subitem status' }}
+      >
+        {statusLabels.length === 0 && (
+          <MenuItem disabled value="">No statuses defined</MenuItem>
+        )}
+        {statusLabels.map((sl) => (
+          <MenuItem key={sl.id} value={sl.label}>
+            <Box component="span" sx={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', bgcolor: sl.color, mr: 1 }} />
+            {sl.label}
+          </MenuItem>
+        ))}
+      </Select>
+
+      <Tooltip
+        title={
+          assignees.length
+            ? assignees.map((a) => memberLabel(a)).join(', ')
+            : 'No one assigned'
+        }
+      >
+        <Box>
+          <AvatarGroup
+            max={3}
+            sx={{
+              '& .MuiAvatar-root': { width: 22, height: 22, fontSize: '0.65rem', borderWidth: 1 }
+            }}
+          >
+            {assignees.map((a) => (
+              <Avatar key={a.user_id || a.id} src={a.avatar_url}>
+                {memberInitials(a)}
+              </Avatar>
+            ))}
+          </AvatarGroup>
+        </Box>
+      </Tooltip>
+      <Tooltip title="Manage assignees">
+        <IconButton
+          size="small"
+          onClick={(e) => setAssigneeAnchor(e.currentTarget)}
+          aria-label="Manage subitem assignees"
+          sx={{ width: 24, height: 24 }}
+        >
+          <IconPlus size={14} />
+        </IconButton>
+      </Tooltip>
+      <Popper
+        open={Boolean(assigneeAnchor)}
+        anchorEl={assigneeAnchor}
+        placement="bottom-end"
+        sx={{ zIndex: 1500 }}
+      >
+        <Paper sx={{ width: 260, p: 1 }} onMouseDown={(e) => e.stopPropagation()}>
+          <Stack spacing={1}>
+            <Typography variant="caption" color="text.secondary">Assigned</Typography>
+            {assignees.length === 0 ? (
+              <Typography variant="caption" color="text.disabled">No one assigned yet</Typography>
+            ) : (
+              <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
+                {assignees.map((a) => (
+                  <Chip
+                    key={a.user_id || a.id}
+                    avatar={<Avatar src={a.avatar_url}>{memberInitials(a)}</Avatar>}
+                    label={memberLabel(a)}
+                    size="small"
+                    onDelete={() => onRemoveAssignee(subitem.id, a.user_id || a.id)}
+                    deleteIcon={<IconX size={14} />}
+                    sx={{ maxWidth: '100%' }}
+                  />
+                ))}
+              </Stack>
+            )}
+            <Divider />
+            <Autocomplete
+              size="small"
+              options={candidateMembers}
+              getOptionLabel={(opt) => memberLabel(opt)}
+              isOptionEqualToValue={(opt, val) => opt.user_id === val?.user_id}
+              onChange={(_e, val) => {
+                if (val) {
+                  onAddAssignee(subitem.id, val);
+                  setAssigneeAnchor(null);
+                }
+              }}
+              renderInput={(params) => (
+                <TextField {...params} placeholder="Assign teammate…" size="small" autoFocus />
+              )}
+              noOptionsText="No more members to assign"
+              clearOnBlur
+              blurOnSelect
+            />
+            <Button size="small" onClick={() => setAssigneeAnchor(null)} sx={{ alignSelf: 'flex-end' }}>
+              Done
+            </Button>
+          </Stack>
+        </Paper>
+      </Popper>
+
+      <Tooltip title="Archive subitem">
+        <IconButton
+          size="small"
+          onClick={() => onArchive(subitem)}
+          aria-label="Archive subitem"
+          sx={{ width: 24, height: 24, color: 'text.disabled', '&:hover': { color: 'error.main' } }}
+        >
+          <IconTrash size={14} />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  );
+}
+
+function SubitemsTab({
+  subitems = [], subitemsLoading, newSubitemName, setNewSubitemName, creatingSubitem,
+  handleCreateSubitem, handleToggleSubitemDone, handleArchiveSubitem,
+  handleRenameSubitem, handleSetSubitemStatus,
+  handleAddSubitemAssignee, handleRemoveSubitemAssignee, handleReorderSubitems,
+  activeItem, statusLabels = [], workspaceMembers = [], setPendingConfirm
+}) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  const totalCount = subitems.length;
+  const doneCount = useMemo(
+    () => subitems.filter((s) => isDoneStatus(s.status, statusLabels)).length,
+    [subitems, statusLabels]
+  );
+
+  const submitCreate = () => {
+    if (!activeItem?.id || !newSubitemName.trim() || creatingSubitem) return;
+    handleCreateSubitem(activeItem.id);
+  };
+
+  const handleDragEnd = (event) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = subitems.findIndex((s) => s.id === active.id);
+    const newIndex = subitems.findIndex((s) => s.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+    const next = subitems.slice();
+    const [moved] = next.splice(oldIndex, 1);
+    next.splice(newIndex, 0, moved);
+    handleReorderSubitems(activeItem.id, next.map((s) => s.id));
+  };
+
+  const requestArchive = (subitem) => {
+    setPendingConfirm({
+      title: 'Archive subitem?',
+      message: <>Archive <strong>{subitem.name || 'this subitem'}</strong>?</>,
+      secondaryText: 'Archived subitems are hidden from this list. An admin can restore them later.',
+      confirmLabel: 'Archive',
+      loadingLabel: 'Archiving…',
+      action: () => handleArchiveSubitem(subitem.id)
+    });
+  };
+
+  return (
+    <Stack spacing={1}>
+      <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+        <Typography variant="subtitle2">
+          Subitems
+          {totalCount > 0 && (
+            <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+              {doneCount}/{totalCount} done
+            </Typography>
+          )}
+        </Typography>
+        {totalCount > 0 && doneCount === totalCount && (
+          <Tooltip title="All subitems complete">
+            <Box component="span" sx={{ display: 'inline-flex', color: 'success.main' }}>
+              <IconChecks size={16} />
+            </Box>
+          </Tooltip>
+        )}
+      </Stack>
+
+      <Stack direction="row" spacing={1} alignItems="center">
+        <TextField
+          size="small"
+          fullWidth
+          placeholder="Add a subitem…"
+          value={newSubitemName}
+          onChange={(e) => setNewSubitemName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); submitCreate(); }
+          }}
+          inputProps={{ 'aria-label': 'New subitem name' }}
+        />
+        <LoadingButton
+          variant="contained"
+          size="small"
+          startIcon={<IconPlus size={14} />}
+          onClick={submitCreate}
+          loading={creatingSubitem}
+          loadingLabel="Adding…"
+          disabled={!activeItem?.id || !newSubitemName.trim()}
+        >
+          Add
+        </LoadingButton>
+      </Stack>
+
+      {subitemsLoading ? (
+        <Stack spacing={0.75} role="status" aria-live="polite" aria-busy="true" aria-label="Loading subitems">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} variant="rounded" height={36} />
+          ))}
+        </Stack>
+      ) : subitems.length === 0 ? (
+        <EmptyState
+          title="No subitems yet."
+          message="Break this work down into smaller steps to track progress and assign teammates."
+          sx={{ py: 2 }}
+        />
+      ) : (
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={subitems.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+            <Stack spacing={0.5}>
+              {subitems.map((sub) => (
+                <SortableSubitemRow
+                  key={sub.id}
+                  subitem={sub}
+                  statusLabels={statusLabels}
+                  workspaceMembers={workspaceMembers}
+                  onToggleDone={handleToggleSubitemDone}
+                  onRename={handleRenameSubitem}
+                  onSetStatus={handleSetSubitemStatus}
+                  onAddAssignee={handleAddSubitemAssignee}
+                  onRemoveAssignee={handleRemoveSubitemAssignee}
+                  onArchive={requestArchive}
+                />
+              ))}
+            </Stack>
+          </SortableContext>
+        </DndContext>
+      )}
+    </Stack>
   );
 }
 
