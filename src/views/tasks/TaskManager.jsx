@@ -525,6 +525,21 @@ export default function TaskManager() {
           onUploadFile: handleUploadFile,
           onDeleteFile: handleDeleteFile
         }}
+        subitemsProps={{
+          subitems: subs.subitems,
+          subitemsLoading: subs.subitemsLoading,
+          newSubitemName: subs.newSubitemName,
+          setNewSubitemName: subs.setNewSubitemName,
+          creatingSubitem: subs.creatingSubitem,
+          handleCreateSubitem: subs.handleCreateSubitem,
+          handleToggleSubitemDone: subs.handleToggleSubitemDone,
+          handleArchiveSubitem: subs.handleArchiveSubitem,
+          handleRenameSubitem: subs.handleRenameSubitem,
+          handleSetSubitemStatus: subs.handleSetSubitemStatus,
+          handleAddSubitemAssignee: subs.handleAddSubitemAssignee,
+          handleRemoveSubitemAssignee: subs.handleRemoveSubitemAssignee,
+          handleReorderSubitems: subs.handleReorderSubitems
+        }}
         timeProps={{
           timeEntries: time.timeEntries,
           timeEntriesLoading: time.timeEntriesLoading,

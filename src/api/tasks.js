@@ -160,6 +160,12 @@ export function deleteTaskSubitem(subitemId) {
   return client.delete(`/tasks/subitems/${subitemId}`).then((res) => res.data);
 }
 
+export function reorderTaskSubitems(itemId, subitemIds) {
+  return client
+    .post(`/tasks/items/${itemId}/subitems/reorder`, { subitem_ids: subitemIds })
+    .then((res) => res.data);
+}
+
 export function fetchTaskBoardAutomations(boardId) {
   return client.get(`/tasks/boards/${boardId}/automations`).then((res) => res.data.automations || []);
 }
