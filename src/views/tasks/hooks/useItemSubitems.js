@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import {
   fetchTaskItemSubitems,
   createTaskSubitem,
@@ -91,13 +91,23 @@ export default function useItemSubitems(setError) {
       if (!subitemId || !status) return;
       setError('');
       // Optimistic: reflect the new status immediately so the chip color updates
-      // without a roundtrip; if the PATCH fails we surface the error and the
-      // next refresh corrects state.
-      setSubitems((prev) => prev.map((s) => (s.id === subitemId ? { ...s, status } : s)));
+      // without a roundtrip; if the PATCH fails we revert to the captured prior
+      // status so the chip never shows an unpersisted value.
+      let previousStatus;
+      setSubitems((prev) =>
+        prev.map((s) => {
+          if (s.id !== subitemId) return s;
+          previousStatus = s.status;
+          return { ...s, status };
+        })
+      );
       try {
         const updated = await updateTaskSubitem(subitemId, { status });
         setSubitems((prev) => prev.map((s) => (s.id === subitemId ? { ...s, ...updated, assignees: s.assignees } : s)));
       } catch (err) {
+        setSubitems((prev) =>
+          prev.map((s) => (s.id === subitemId && s.status === status ? { ...s, status: previousStatus } : s))
+        );
         setError(err.message || 'Unable to update subitem status');
       }
     },
@@ -189,10 +199,16 @@ export default function useItemSubitems(setError) {
     [setError]
   );
 
+  // Request-token guard: each reorder bumps a monotonic counter; rollbacks only
+  // apply when this request is still the latest, so a stale failure can't
+  // overwrite a newer drag's order.
+  const reorderRequestRef = useRef(0);
+
   const handleReorderSubitems = useCallback(
     async (itemId, orderedIds) => {
       if (!itemId || !Array.isArray(orderedIds) || !orderedIds.length) return;
       setError('');
+      const requestId = ++reorderRequestRef.current;
       // Optimistic reorder: rearrange local state immediately so the drag feels
       // instant; if the server rejects, revert and surface the error.
       let previous;
@@ -206,7 +222,7 @@ export default function useItemSubitems(setError) {
       try {
         await reorderTaskSubitems(itemId, orderedIds);
       } catch (err) {
-        if (previous) setSubitems(previous);
+        if (previous && requestId === reorderRequestRef.current) setSubitems(previous);
         setError(err.message || 'Unable to reorder subitems');
       }
     },

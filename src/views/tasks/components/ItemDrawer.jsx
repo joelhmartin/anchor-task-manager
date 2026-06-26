@@ -720,7 +720,6 @@ function SortableSubitemRow({
     <Box
       ref={setNodeRef}
       style={style}
-      {...attributes}
       sx={{
         display: 'flex',
         alignItems: 'center',
@@ -735,11 +734,10 @@ function SortableSubitemRow({
       }}
     >
       <Box
+        {...attributes}
         {...listeners}
         sx={{ cursor: 'grab', display: 'flex', alignItems: 'center', color: 'text.disabled', touchAction: 'none' }}
         aria-label="Drag to reorder subitem"
-        role="button"
-        tabIndex={-1}
       >
         <IconGripVertical size={16} />
       </Box>

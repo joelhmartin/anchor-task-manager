@@ -3952,6 +3952,7 @@ router.post('/items/:itemId/subitems/reorder', async (req, res) => {
     }
 
     const subReorderBoardId = await getBoardIdForItem(itemId);
+    await client.query('COMMIT');
     emitTaskEvent({
       event_type: 'subitem.reordered',
       workspace_id: workspaceId,
@@ -3962,8 +3963,6 @@ router.post('/items/:itemId/subitems/reorder', async (req, res) => {
       actor_id: req.user.id,
       new_value: { order: finalIds }
     });
-
-    await client.query('COMMIT');
     return res.json({ ok: true, order: finalIds });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
