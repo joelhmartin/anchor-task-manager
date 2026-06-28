@@ -9,7 +9,7 @@ import { logTaskActivity, ActivityEventTypes } from '../services/activityLog.js'
 import { requireAuth } from '../middleware/auth.js';
 import { isStaff } from '../middleware/roles.js';
 import { createNotification } from '../services/notifications.js';
-import { generateAiResponse } from '../services/ai.js';
+import { runAi } from '../services/ai/index.js';
 import { runDueDateAutomations, runEventAutomationsForAssigneeAdded, runEventAutomationsForItemChange } from '../services/taskAutomations.js';
 import { emitTaskEvent, persistTaskEventInTx, fireTaskEventSubscribers, resolveItemContext } from '../services/taskEventBus.js';
 import { seedSystemLabels } from '../services/taskLabels.js';
@@ -3269,12 +3269,15 @@ router.post('/items/:itemId/ai-summary/refresh', async (req, res) => {
     }\n\nUpdates (oldest to newest):\n${updateTranscript}\n\nOutput format:\n- Summary (2-5 sentences)\n- Current status\n- Blockers (if any)\n- Next steps (3 bullets max)\n\nBe concise and action-oriented.`;
 
     try {
-      summaryText = await generateAiResponse({
+      const aiRes = await runAi('task_item_summary', {
         prompt,
-        systemPrompt: 'You summarize internal task updates for a project management system. Keep it concise, factual, and useful.',
+        system: 'You summarize internal task updates for a project management system. Keep it concise, factual, and useful.',
         temperature: 0.2,
         maxTokens: 350
       });
+      summaryText = aiRes.text;
+      provider = aiRes.provider;
+      model = aiRes.model;
     } catch (aiErr) {
       provider = 'fallback';
       model = null;
@@ -4472,6 +4475,8 @@ router.get('/ai/daily-overview', async (req, res) => {
     }
 
     // 4. Build AI prompt using structured agent prompt
+    let overviewProvider = 'vertex';
+    let overviewModel = null;
     const todayDate = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
     // Prepare items with activity info
@@ -4564,7 +4569,10 @@ Return a JSON object with these sections:
 
     let aiResponse;
     try {
-      aiResponse = await generateAiResponse(prompt, { maxTokens: 2000 });
+      const aiRes = await runAi('task_daily_overview', { prompt, maxTokens: 2000 });
+      aiResponse = aiRes.text;
+      overviewProvider = aiRes.provider;
+      overviewModel = aiRes.model;
     } catch (aiErr) {
       console.error('[tasks:ai:daily-overview:ai-call]', aiErr);
       // Return a fallback response using new structure
@@ -4640,8 +4648,8 @@ Return a JSON object with these sections:
         JSON.stringify(parsed.top_priorities || []),
         JSON.stringify(pendingMentions.slice(0, 20)),
         JSON.stringify(unansweredMentions.slice(0, 20)),
-        'vertex',
-        null
+        overviewProvider,
+        overviewModel
       ]
     );
 
