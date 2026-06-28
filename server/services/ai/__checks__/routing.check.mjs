@@ -25,4 +25,15 @@ assert.deepEqual(
   { provider: 'anthropic', model: 'claude-sonnet-4-6' }
 );
 
+// vertex routes honor VERTEX_MODEL from the passed env
+assert.deepEqual(
+  resolveRoute('task_item_summary', null, { VERTEX_MODEL: 'gemini-2.0-flash' }),
+  { provider: 'vertex', model: 'gemini-2.0-flash' }
+);
+// unknown key + VERTEX_MODEL also honors it
+assert.deepEqual(
+  resolveRoute('does_not_exist', null, { VERTEX_MODEL: 'gemini-2.0-flash' }),
+  { provider: 'vertex', model: 'gemini-2.0-flash' }
+);
+
 console.log('routing.check.mjs OK');

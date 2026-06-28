@@ -45,7 +45,12 @@ export async function generate(request, env = process.env) {
     throw new Error(`Anthropic API error ${resp.status}: ${errText.slice(0, 200)}`);
   }
 
-  const data = await resp.json();
+  let data;
+  try {
+    data = await resp.json();
+  } catch {
+    throw new Error('Anthropic returned a non-JSON response');
+  }
   const text = (data.content || [])
     .filter((b) => b.type === 'text')
     .map((b) => b.text)
