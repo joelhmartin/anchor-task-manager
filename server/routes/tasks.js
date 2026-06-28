@@ -10,6 +10,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { isStaff } from '../middleware/roles.js';
 import { createNotification } from '../services/notifications.js';
 import { generateAiResponse } from '../services/ai.js';
+import { runAi } from '../services/ai/index.js';
 import { runDueDateAutomations, runEventAutomationsForAssigneeAdded, runEventAutomationsForItemChange } from '../services/taskAutomations.js';
 import { emitTaskEvent, persistTaskEventInTx, fireTaskEventSubscribers, resolveItemContext } from '../services/taskEventBus.js';
 import { seedSystemLabels } from '../services/taskLabels.js';
@@ -3265,12 +3266,15 @@ router.post('/items/:itemId/ai-summary/refresh', async (req, res) => {
     }\n\nUpdates (oldest to newest):\n${updateTranscript}\n\nOutput format:\n- Summary (2-5 sentences)\n- Current status\n- Blockers (if any)\n- Next steps (3 bullets max)\n\nBe concise and action-oriented.`;
 
     try {
-      summaryText = await generateAiResponse({
+      const aiRes = await runAi('task_item_summary', {
         prompt,
-        systemPrompt: 'You summarize internal task updates for a project management system. Keep it concise, factual, and useful.',
+        system: 'You summarize internal task updates for a project management system. Keep it concise, factual, and useful.',
         temperature: 0.2,
         maxTokens: 350
       });
+      summaryText = aiRes.text;
+      provider = aiRes.provider;
+      model = aiRes.model;
     } catch (aiErr) {
       provider = 'fallback';
       model = null;
