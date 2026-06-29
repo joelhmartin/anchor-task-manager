@@ -5821,7 +5821,7 @@ router.get('/items/:itemId/events', async (req, res) => {
        WHERE e.item_id = $1
           OR (e.entity_type = 'subitem'
               AND e.entity_id IN (SELECT id FROM task_subitems WHERE parent_item_id = $1))
-       ORDER BY e.created_at DESC
+       ORDER BY e.created_at DESC, e.id DESC
        LIMIT $2 OFFSET $3`,
       [itemId, limit, offset]
     );

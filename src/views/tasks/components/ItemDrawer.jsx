@@ -1886,6 +1886,18 @@ const ACTIVITY_DATE_FORMAT = {
   month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
 };
 
+function relativeTimeFromNow(dateStr) {
+  if (!dateStr) return '';
+  const then = new Date(dateStr);
+  const diff = (Date.now() - then.getTime()) / 1000;
+  if (Number.isNaN(diff)) return '';
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  return then.toLocaleDateString(undefined, ACTIVITY_DATE_FORMAT);
+}
+
 function actorDisplay(event) {
   if (event.first_name || event.last_name) {
     return [event.first_name, event.last_name].filter(Boolean).join(' ').trim();
@@ -1936,22 +1948,18 @@ function describeEvent(event) {
       };
     case 'item.updated':
       return { verb: `updated this ${entityLabel}`, diff: null };
-    case 'subitem.created':
-      return { verb: `added subitem "${newV?.name || ''}"`.trim(), diff: null };
-    case 'subitem.archived':
-      return { verb: `archived subitem "${oldV?.name || ''}"`.trim(), diff: null };
-    case 'subitem.status_changed':
-      return {
-        verb: `changed subitem "${newV?.name || oldV?.name || ''}" status`,
-        diff: { field: 'status', from: oldV?.status, to: newV?.status }
-      };
-    case 'subitem.renamed':
-      return {
-        verb: 'renamed a subitem',
-        diff: { field: 'name', from: oldV?.name, to: newV?.name }
-      };
-    case 'subitem.updated':
-      return { verb: 'updated a subitem', diff: null };
+    case 'subitem.created': {
+      const name = newV?.name;
+      return { verb: name ? `added subitem "${name}"` : 'added a subitem', diff: null };
+    }
+    case 'subitem.archived': {
+      const name = oldV?.name || newV?.name;
+      return { verb: name ? `archived subitem "${name}"` : 'archived a subitem', diff: null };
+    }
+    case 'subitem.updated': {
+      const name = newV?.name || oldV?.name;
+      return { verb: name ? `updated subitem "${name}"` : 'updated a subitem', diff: null };
+    }
     default: {
       const cleaned = String(type || 'event').replace(/[._]/g, ' ');
       return { verb: cleaned, diff: null };
@@ -1986,9 +1994,7 @@ function ActivityRow({ event }) {
   const { verb, diff } = describeEvent(event);
   const actor = actorDisplay(event);
   const initials = actorInitials(event);
-  const when = event.created_at
-    ? new Date(event.created_at).toLocaleString(undefined, ACTIVITY_DATE_FORMAT)
-    : '';
+  const when = relativeTimeFromNow(event.created_at);
   const absoluteWhen = event.created_at ? new Date(event.created_at).toLocaleString() : '';
 
   return (
