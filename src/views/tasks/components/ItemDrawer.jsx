@@ -7,7 +7,7 @@ import {
 import { alpha } from '@mui/material/styles';
 import {
   IconCheck, IconChecks, IconClock, IconEye, IconFile, IconFileTypePdf, IconGripVertical,
-  IconPencil, IconPhoto, IconPlus, IconRepeat, IconTrash, IconX
+  IconHistory, IconPencil, IconPhoto, IconPlus, IconRepeat, IconTrash, IconX
 } from '@tabler/icons-react';
 import { DndContext, closestCenter, PointerSensor, KeyboardSensor, useSensor, useSensors } from '@dnd-kit/core';
 import {
@@ -40,6 +40,8 @@ export default function ItemDrawer({
   timeProps,
   // Subitems
   subitemsProps,
+  // Activity
+  activityProps,
   // Assignees
   assigneesProps,
   // AI summary
@@ -605,6 +607,7 @@ export default function ItemDrawer({
             <Tab value="subitems" label="Subitems" />
             <Tab value="files" label="Files" />
             <Tab value="time" label="Time Tracking" />
+            <Tab value="activity" label="Activity" />
           </Tabs>
 
           {drawerTab === 'updates' && <UpdatesTab {...updatesProps} aiProps={aiProps} activeItem={activeItem} />}
@@ -625,6 +628,12 @@ export default function ItemDrawer({
             />
           )}
           {drawerTab === 'time' && <TimeTab {...timeProps} activeItem={activeItem} />}
+          {drawerTab === 'activity' && (
+            <ActivityTab
+              {...(activityProps || {})}
+              workspaceMembers={workspaceMembers}
+            />
+          )}
         </Stack>
       </Box>
 
@@ -1867,6 +1876,183 @@ function TimeTab({
           Log time
         </LoadingButton>
       </Stack>
+    </Stack>
+  );
+}
+
+/* ─── Activity Tab ─── */
+
+const ACTIVITY_DATE_FORMAT = {
+  month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+};
+
+function relativeTimeFromNow(dateStr) {
+  if (!dateStr) return '';
+  const then = new Date(dateStr);
+  const diff = (Date.now() - then.getTime()) / 1000;
+  if (Number.isNaN(diff)) return '';
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  return then.toLocaleDateString(undefined, ACTIVITY_DATE_FORMAT);
+}
+
+function actorDisplay(event) {
+  if (event.first_name || event.last_name) {
+    return [event.first_name, event.last_name].filter(Boolean).join(' ').trim();
+  }
+  if (event.actor_email) return event.actor_email;
+  if (event.actor_type === 'automation') return 'Automation';
+  if (event.actor_type === 'system') return 'System';
+  return 'Unknown';
+}
+
+function actorInitials(event) {
+  const label = actorDisplay(event);
+  const parts = String(label).split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0][0]?.toUpperCase() || '?';
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+function formatScalar(value) {
+  if (value === null || value === undefined || value === '') return '∅';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value);
+}
+
+function describeEvent(event) {
+  const { event_type: type, entity_type, old_value: oldV, new_value: newV } = event;
+  const entityLabel = entity_type === 'subitem' ? 'subitem' : 'item';
+
+  switch (type) {
+    case 'item.created':
+      return { verb: 'created this item', diff: null };
+    case 'item.archived':
+      return { verb: 'archived this item', diff: null };
+    case 'item.restored':
+      return { verb: 'restored this item', diff: null };
+    case 'item.completed':
+      return { verb: 'marked this item complete', diff: null };
+    case 'item.status_changed':
+      return {
+        verb: 'changed status',
+        diff: { field: 'status', from: oldV?.status, to: newV?.status }
+      };
+    case 'item.due_date_changed':
+      return {
+        verb: 'changed due date',
+        diff: { field: 'due_date', from: oldV?.due_date, to: newV?.due_date }
+      };
+    case 'item.updated':
+      return { verb: `updated this ${entityLabel}`, diff: null };
+    case 'subitem.created': {
+      const name = newV?.name;
+      return { verb: name ? `added subitem "${name}"` : 'added a subitem', diff: null };
+    }
+    case 'subitem.archived': {
+      const name = oldV?.name || newV?.name;
+      return { verb: name ? `archived subitem "${name}"` : 'archived a subitem', diff: null };
+    }
+    case 'subitem.updated': {
+      const name = newV?.name || oldV?.name;
+      return { verb: name ? `updated subitem "${name}"` : 'updated a subitem', diff: null };
+    }
+    default: {
+      const cleaned = String(type || 'event').replace(/[._]/g, ' ');
+      return { verb: cleaned, diff: null };
+    }
+  }
+}
+
+function ActivityDiff({ field, from, to }) {
+  return (
+    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.25, flexWrap: 'wrap' }}>
+      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 500 }}>
+        {field}:
+      </Typography>
+      <Chip
+        size="small"
+        label={formatScalar(from)}
+        sx={{ height: 18, fontSize: '0.7rem', textDecoration: 'line-through', opacity: 0.7 }}
+      />
+      <Typography variant="caption" color="text.disabled">→</Typography>
+      <Chip
+        size="small"
+        color="primary"
+        variant="outlined"
+        label={formatScalar(to)}
+        sx={{ height: 18, fontSize: '0.7rem' }}
+      />
+    </Stack>
+  );
+}
+
+function ActivityRow({ event }) {
+  const { verb, diff } = describeEvent(event);
+  const actor = actorDisplay(event);
+  const initials = actorInitials(event);
+  const when = relativeTimeFromNow(event.created_at);
+  const absoluteWhen = event.created_at ? new Date(event.created_at).toLocaleString() : '';
+
+  return (
+    <Stack direction="row" spacing={1.25} alignItems="flex-start" sx={{ py: 1 }}>
+      <Avatar src={event.avatar_url || undefined} sx={{ width: 28, height: 28, fontSize: 12 }}>
+        {initials}
+      </Avatar>
+      <Stack sx={{ minWidth: 0, flex: 1 }}>
+        <Typography variant="body2" sx={{ lineHeight: 1.4 }}>
+          <Box component="span" sx={{ fontWeight: 600 }}>{actor}</Box>
+          <Box component="span" sx={{ color: 'text.secondary' }}>{' '}{verb}</Box>
+        </Typography>
+        {diff && <ActivityDiff field={diff.field} from={diff.from} to={diff.to} />}
+        <Tooltip title={absoluteWhen} arrow placement="bottom-start">
+          <Typography variant="caption" color="text.disabled" sx={{ mt: 0.25, alignSelf: 'flex-start' }}>
+            {when}
+          </Typography>
+        </Tooltip>
+      </Stack>
+    </Stack>
+  );
+}
+
+function ActivityTab({ itemEvents, itemEventsLoading }) {
+  const events = itemEvents || [];
+
+  if (itemEventsLoading) {
+    return (
+      <Stack spacing={1} role="status" aria-live="polite" aria-busy="true" aria-label="Loading activity">
+        {[0, 1, 2, 3].map((i) => (
+          <Stack key={i} direction="row" spacing={1.25} alignItems="flex-start" sx={{ py: 1 }}>
+            <Skeleton variant="circular" width={28} height={28} />
+            <Stack sx={{ flex: 1 }}>
+              <Skeleton variant="text" width="60%" />
+              <Skeleton variant="text" width="30%" height={12} />
+            </Stack>
+          </Stack>
+        ))}
+      </Stack>
+    );
+  }
+
+  if (!events.length) {
+    return (
+      <EmptyState
+        icon={IconHistory}
+        title="No activity yet."
+        message="Changes to this item — status updates, due-date edits, subitems added — will appear here."
+        sx={{ py: 4 }}
+      />
+    );
+  }
+
+  return (
+    <Stack divider={<Divider />}>
+      {events.map((event) => (
+        <ActivityRow key={event.id} event={event} />
+      ))}
     </Stack>
   );
 }

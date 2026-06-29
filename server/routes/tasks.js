@@ -5792,6 +5792,55 @@ router.get('/boards/:boardId/critical-path', async (req, res) => {
   }
 });
 
+// ─── Item Activity ──────────────────────────────────────────────────
+
+// GET /items/:itemId/events — per-item event timeline for the drawer Activity tab.
+// Scoped to a single item so the workspace-wide audit log isn't pulled into the
+// drawer. Returns events with item_id matching the requested item OR events
+// whose entity is a subitem of that item, so renames/status changes on
+// subitems still show up in the parent's timeline.
+router.get('/items/:itemId/events', async (req, res) => {
+  const eff = getEffectiveRole(req);
+  const userId = req.user.id;
+  const { itemId } = req.params;
+  try {
+    const workspaceId = await getWorkspaceIdForItem(itemId);
+    if (!workspaceId) return res.status(404).json({ message: 'Item not found' });
+    const ok = await assertWorkspaceAccess({ effRole: eff, userId, workspaceId });
+    if (!ok) return res.status(403).json({ message: 'Insufficient permissions' });
+
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+    const { rows: events } = await query(
+      `SELECT e.id, e.event_type, e.entity_type, e.entity_id,
+              e.actor_id, e.actor_type, e.old_value, e.new_value, e.metadata, e.created_at,
+              u.first_name, u.last_name, u.email AS actor_email, u.avatar_url
+       FROM task_events e
+       LEFT JOIN users u ON u.id = e.actor_id
+       WHERE e.item_id = $1
+          OR (e.entity_type = 'subitem'
+              AND e.entity_id IN (SELECT id FROM task_subitems WHERE parent_item_id = $1))
+       ORDER BY e.created_at DESC, e.id DESC
+       LIMIT $2 OFFSET $3`,
+      [itemId, limit, offset]
+    );
+
+    const { rows: countRows } = await query(
+      `SELECT COUNT(*)::int AS total FROM task_events e
+       WHERE e.item_id = $1
+          OR (e.entity_type = 'subitem'
+              AND e.entity_id IN (SELECT id FROM task_subitems WHERE parent_item_id = $1))`,
+      [itemId]
+    );
+
+    res.json({ events, total: countRows[0]?.total || 0 });
+  } catch (err) {
+    console.error('[tasks] GET /items/:itemId/events error:', err.message);
+    res.status(500).json({ message: 'Failed to fetch item activity' });
+  }
+});
+
 // ─── Audit Log ──────────────────────────────────────────────────────
 
 // GET /audit-log — query task events with filters

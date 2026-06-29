@@ -39,6 +39,7 @@ import useItemUpdates from './hooks/useItemUpdates';
 import useItemTimeTracking from './hooks/useItemTimeTracking';
 import useItemFiles from './hooks/useItemFiles';
 import useItemSubitems from './hooks/useItemSubitems';
+import useItemActivity from './hooks/useItemActivity';
 import useStatusLabels from './hooks/useStatusLabels';
 import useMyWork from './hooks/useMyWork';
 
@@ -71,6 +72,7 @@ export default function TaskManager() {
   const time = useItemTimeTracking(setError);
   const files = useItemFiles(setError);
   const subs = useItemSubitems(setError);
+  const activity = useItemActivity(setError);
   const [automationsDrawerOpen, setAutomationsDrawerOpen] = useState(false);
   const labels = useStatusLabels(activeBoardId, board.updateStatusLabelsInView);
   const myWork = useMyWork(pane, user?.id);
@@ -173,8 +175,8 @@ export default function TaskManager() {
   const handleOpenItemDrawer = (item, tab) => {
     if (tab) drawer.setDrawerTab(tab);
     drawer.openItemDrawer(item, {
-      resetFns: [updates.reset, time.reset, files.reset, subs.reset],
-      loadFns: [updates.loadUpdates, files.loadFiles, time.loadTimeEntries, updates.loadAiSummary, subs.loadSubitems]
+      resetFns: [updates.reset, time.reset, files.reset, subs.reset, activity.reset],
+      loadFns: [updates.loadUpdates, files.loadFiles, time.loadTimeEntries, updates.loadAiSummary, subs.loadSubitems, activity.loadActivity]
     });
   };
 
@@ -539,6 +541,10 @@ export default function TaskManager() {
           handleAddSubitemAssignee: subs.handleAddSubitemAssignee,
           handleRemoveSubitemAssignee: subs.handleRemoveSubitemAssignee,
           handleReorderSubitems: subs.handleReorderSubitems
+        }}
+        activityProps={{
+          itemEvents: activity.itemEvents,
+          itemEventsLoading: activity.itemEventsLoading
         }}
         timeProps={{
           timeEntries: time.timeEntries,

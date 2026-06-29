@@ -436,6 +436,11 @@ export function fetchCriticalPath(boardId) {
   return client.get(`/tasks/boards/${boardId}/critical-path`).then((res) => res.data);
 }
 
+// Item Activity (per-item event timeline shown in the drawer Activity tab)
+export function fetchTaskItemEvents(itemId, params = {}) {
+  return client.get(`/tasks/items/${itemId}/events`, { params }).then((res) => res.data);
+}
+
 // Audit Log
 export function fetchAuditLog(params) {
   return client.get('/tasks/audit-log', { params }).then((res) => res.data);
