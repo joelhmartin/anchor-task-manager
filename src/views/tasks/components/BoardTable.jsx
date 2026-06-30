@@ -113,7 +113,14 @@ const ItemRow = memo(function ItemRow({
               }}
               title="Rename"
               aria-label={`Rename ${item.name}`}
-              sx={{ opacity: 0, transition: 'opacity 120ms', flexShrink: 0 }}
+              sx={{
+                opacity: 0,
+                transition: 'opacity 120ms',
+                flexShrink: 0,
+                // Keyboard users can't trigger hover; reveal on focus so the
+                // affordance is visible and the focus ring is discoverable.
+                '&:focus-visible': { opacity: 1 }
+              }}
             >
               <IconPencil size={14} />
             </IconButton>

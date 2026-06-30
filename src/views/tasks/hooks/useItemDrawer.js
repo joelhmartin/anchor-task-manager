@@ -115,14 +115,16 @@ export default function useItemDrawer(activeBoardId, searchParams, setSearchPara
     setError('');
     try {
       const server = await updateTaskItem(prev.id, { name: next });
-      setActiveItem(server);
+      // Only reconcile if the drawer is still on the same item — the user may
+      // have switched items or closed the drawer while the PATCH was in flight.
+      setActiveItem((current) => (current?.id === prev.id ? server : current));
       if (activeBoardId) {
         if (loadBoardView) loadBoardView(activeBoardId);
         if (loadBoardReport) loadBoardReport(activeBoardId);
       }
       return true;
     } catch (err) {
-      setActiveItem(prev);
+      setActiveItem((current) => (current?.id === prev.id ? prev : current));
       toast.error(err.message || 'Unable to rename item');
       return false;
     }

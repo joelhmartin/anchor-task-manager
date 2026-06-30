@@ -87,6 +87,9 @@ export default function ItemDrawer({
   // Tracks "user pressed Escape" so the blur that fires as the TextField unmounts
   // doesn't sneak in a save with the pre-cancel draft.
   const nameCancelledRef = useRef(false);
+  // Ref-backed in-flight guard so an Enter-triggered save and a follow-on blur
+  // can't both pass the `nameSaving` state check before React re-renders.
+  const nameSavingRef = useRef(false);
 
   // Close the editor whenever the user switches to a different item.
   useEffect(() => {
@@ -94,6 +97,7 @@ export default function ItemDrawer({
     setNameDraft('');
     setNameSaving(false);
     nameCancelledRef.current = false;
+    nameSavingRef.current = false;
   }, [activeItem?.id]);
 
   const startNameEdit = () => {
@@ -110,11 +114,12 @@ export default function ItemDrawer({
   };
 
   const commitNameEdit = async () => {
-    if (!activeItem?.id || nameSaving) return;
+    if (!activeItem?.id || nameSavingRef.current) return;
     if (nameCancelledRef.current) { nameCancelledRef.current = false; return; }
     const next = nameDraft.trim();
     // Empty or unchanged → silently close without an API round-trip
     if (!next || next === activeItem.name) { setNameEditing(false); setNameDraft(''); return; }
+    nameSavingRef.current = true;
     setNameSaving(true);
     try {
       const ok = await onRenameItem?.(next);
@@ -126,6 +131,7 @@ export default function ItemDrawer({
       // ok === false → the hook reverted activeItem and surfaced a toast; keep the
       // editor open with the user's draft so they can retry or copy it out.
     } finally {
+      nameSavingRef.current = false;
       setNameSaving(false);
     }
   };
@@ -312,10 +318,10 @@ export default function ItemDrawer({
                 if (e.key === 'Escape') { e.preventDefault(); cancelNameEdit(); }
               }}
               disabled={nameSaving}
+              autoFocus
               inputProps={{
                 maxLength: 500,
                 'aria-label': 'Item name',
-                autoFocus: true,
                 onFocus: (e) => e.currentTarget.select()
               }}
               sx={{
