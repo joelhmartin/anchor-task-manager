@@ -48,7 +48,7 @@ export default function ItemDrawer({
   aiProps,
   // Board context
   statusLabels, isAdmin,
-  onUpdateItemField, onOpenStatusLabelsDialog,
+  onUpdateItemField, onRenameItem, onOpenStatusLabelsDialog,
   // Labels
   itemLabels = [],
   workspaceLabels = [],
@@ -79,6 +79,56 @@ export default function ItemDrawer({
   const [recurrence, setRecurrence] = useState(null);
   const [recurrenceLoading, setRecurrenceLoading] = useState(false);
   const [recurrenceMenuAnchor, setRecurrenceMenuAnchor] = useState(null);
+
+  // ── Inline name edit ──
+  const [nameEditing, setNameEditing] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [nameSaving, setNameSaving] = useState(false);
+  // Tracks "user pressed Escape" so the blur that fires as the TextField unmounts
+  // doesn't sneak in a save with the pre-cancel draft.
+  const nameCancelledRef = useRef(false);
+
+  // Close the editor whenever the user switches to a different item.
+  useEffect(() => {
+    setNameEditing(false);
+    setNameDraft('');
+    setNameSaving(false);
+    nameCancelledRef.current = false;
+  }, [activeItem?.id]);
+
+  const startNameEdit = () => {
+    if (!activeItem?.id || nameSaving) return;
+    nameCancelledRef.current = false;
+    setNameDraft(activeItem.name || '');
+    setNameEditing(true);
+  };
+
+  const cancelNameEdit = () => {
+    nameCancelledRef.current = true;
+    setNameEditing(false);
+    setNameDraft('');
+  };
+
+  const commitNameEdit = async () => {
+    if (!activeItem?.id || nameSaving) return;
+    if (nameCancelledRef.current) { nameCancelledRef.current = false; return; }
+    const next = nameDraft.trim();
+    // Empty or unchanged → silently close without an API round-trip
+    if (!next || next === activeItem.name) { setNameEditing(false); setNameDraft(''); return; }
+    setNameSaving(true);
+    try {
+      const ok = await onRenameItem?.(next);
+      if (ok !== false) {
+        // Success path: hook has already reconciled activeItem from the server response.
+        setNameEditing(false);
+        setNameDraft('');
+      }
+      // ok === false → the hook reverted activeItem and surfaced a toast; keep the
+      // editor open with the user's draft so they can retry or copy it out.
+    } finally {
+      setNameSaving(false);
+    }
+  };
 
   // ── Destructive-action confirmation ──
   // Each entry: { title, message, secondaryText?, confirmLabel, loadingLabel, action }
@@ -250,7 +300,74 @@ export default function ItemDrawer({
     <Drawer anchor="right" open={open} onClose={onClose} PaperProps={{ sx: { width: { xs: '100%', sm: '40vw' } } }}>
       <Box sx={{ p: 2 }}>
         <Stack spacing={1.5}>
-          <Typography variant="h3">{activeItem?.name || 'Item'}</Typography>
+          {nameEditing ? (
+            <TextField
+              size="small"
+              fullWidth
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={commitNameEdit}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); commitNameEdit(); }
+                if (e.key === 'Escape') { e.preventDefault(); cancelNameEdit(); }
+              }}
+              disabled={nameSaving}
+              inputProps={{
+                maxLength: 500,
+                'aria-label': 'Item name',
+                autoFocus: true,
+                onFocus: (e) => e.currentTarget.select()
+              }}
+              sx={{
+                '& .MuiInputBase-input': {
+                  fontSize: (theme) => theme.typography.h3.fontSize,
+                  fontWeight: (theme) => theme.typography.h3.fontWeight,
+                  lineHeight: (theme) => theme.typography.h3.lineHeight,
+                  py: 0.5
+                }
+              }}
+            />
+          ) : (
+            <Tooltip title="Click to rename" placement="top-start" enterDelay={400}>
+              <Box
+                onClick={startNameEdit}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startNameEdit(); }
+                }}
+                role="button"
+                tabIndex={0}
+                aria-label={`Rename item: ${activeItem?.name || 'Item'}`}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.75,
+                  cursor: 'text',
+                  borderRadius: 1,
+                  px: 0.5,
+                  mx: -0.5,
+                  py: 0.25,
+                  minHeight: 40,
+                  transition: 'background-color 120ms',
+                  '&:hover': { bgcolor: (theme) => alpha(theme.palette.primary.main, 0.06) },
+                  '&:hover .item-name-edit-indicator': { opacity: 1 },
+                  '&:focus-visible': {
+                    outline: (theme) => `2px solid ${theme.palette.primary.main}`,
+                    outlineOffset: 2
+                  }
+                }}
+              >
+                <Typography variant="h3" sx={{ flex: 1, minWidth: 0, wordBreak: 'break-word' }}>
+                  {activeItem?.name || 'Item'}
+                </Typography>
+                <IconPencil
+                  size={16}
+                  className="item-name-edit-indicator"
+                  style={{ opacity: 0, transition: 'opacity 120ms', flexShrink: 0 }}
+                  aria-hidden="true"
+                />
+              </Box>
+            </Tooltip>
+          )}
           <Stack spacing={0.5}>
             <Typography variant="caption" color="text.secondary">
               Status
