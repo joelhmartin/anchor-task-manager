@@ -104,6 +104,30 @@ export default function useItemDrawer(activeBoardId, searchParams, setSearchPara
     }
   }, [activeItem, activeBoardId, setError]);
 
+  // Optimistic rename: paints the new name immediately, reverts on failure.
+  // Used by the inline-edit heading in ItemDrawer.
+  const renameItem = useCallback(async (rawName, { loadBoardView, loadBoardReport } = {}) => {
+    if (!activeItem?.id) return false;
+    const next = String(rawName ?? '').trim();
+    if (!next || next === activeItem.name) return false;
+    const prev = activeItem;
+    setActiveItem({ ...prev, name: next });
+    setError('');
+    try {
+      const server = await updateTaskItem(prev.id, { name: next });
+      setActiveItem(server);
+      if (activeBoardId) {
+        if (loadBoardView) loadBoardView(activeBoardId);
+        if (loadBoardReport) loadBoardReport(activeBoardId);
+      }
+      return true;
+    } catch (err) {
+      setActiveItem(prev);
+      toast.error(err.message || 'Unable to rename item');
+      return false;
+    }
+  }, [activeItem, activeBoardId, setError, toast]);
+
   // Scroll-into-view on item open
   useEffect(() => {
     const id = activeItem?.id;
@@ -122,6 +146,6 @@ export default function useItemDrawer(activeBoardId, searchParams, setSearchPara
     highlightedItemId, itemCardRefs,
     assignees, setAssignees, assigneesLoading, newAssigneeUserId, setNewAssigneeUserId, addingAssignee,
     openItemDrawer, closeItemDrawer,
-    handleAddAssignee, handleRemoveAssignee, updateItemField
+    handleAddAssignee, handleRemoveAssignee, updateItemField, renameItem
   };
 }

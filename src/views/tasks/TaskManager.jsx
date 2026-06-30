@@ -214,6 +214,12 @@ export default function TaskManager() {
       loadBoardReport: board.loadBoardReport
     });
 
+  const handleRenameItem = (name) =>
+    drawer.renameItem(name, {
+      loadBoardView: board.loadBoardView,
+      loadBoardReport: board.loadBoardReport
+    });
+
   const handleLogTime = () =>
     time.handleLogTime(drawer.activeItem?.id, () => board.loadBoardView(activeBoardId));
 
@@ -588,6 +594,7 @@ export default function TaskManager() {
         workspaceMembers={workspaceMembers}
         isAdmin={isAdmin}
         onUpdateItemField={handleUpdateItemField}
+        onRenameItem={handleRenameItem}
         onOpenStatusLabelsDialog={() => labels.setStatusLabelsDialogOpen(true)}
         itemLabels={board.itemLabelsMap[drawer.activeItem?.id] || []}
         workspaceLabels={workspaceLabels}
