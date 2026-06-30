@@ -21,7 +21,7 @@ import {
   TextField,
   Typography
 } from '@mui/material';
-import { IconChevronDown, IconChevronRight, IconMessageCircle, IconClock, IconLayoutGrid, IconTrash } from '@tabler/icons-react';
+import { IconChevronDown, IconChevronRight, IconMessageCircle, IconClock, IconLayoutGrid, IconPencil, IconTrash } from '@tabler/icons-react';
 import ConfirmDialog from 'ui-component/extended/ConfirmDialog';
 import EmptyState from 'ui-component/extended/EmptyState';
 import FormDialog from 'ui-component/extended/FormDialog';
@@ -35,7 +35,7 @@ const ItemRow = memo(function ItemRow({
   itemLabels,
   isHighlighted, isEditing, draftName,
   onDraftNameChange, onCommitEdit, onCancelEdit,
-  onNameClick, onNameDoubleClick,
+  onNameClick, onNameDoubleClick, onStartNameEdit,
   onStatusChange, onOpenPeoplePicker, onDueDateChange,
   onOpenLabelPicker,
   onClickItem, onArchiveClick, canArchive, boardId, canManageLabels,
@@ -81,10 +81,19 @@ const ItemRow = memo(function ItemRow({
               if (e.key === 'Enter') onCommitEdit(item.id);
               if (e.key === 'Escape') onCancelEdit();
             }}
+            inputProps={{ maxLength: 500, 'aria-label': 'Item name' }}
             autoFocus
           />
         ) : (
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+          <Stack
+            direction="row"
+            spacing={0.5}
+            alignItems="center"
+            sx={{
+              minWidth: 0,
+              '&:hover .item-row-edit-affordance': { opacity: 1 }
+            }}
+          >
             <Typography
               variant="body2"
               sx={{ fontWeight: 600, minWidth: 0, flex: 1 }}
@@ -95,6 +104,26 @@ const ItemRow = memo(function ItemRow({
             >
               {item.name}
             </Typography>
+            <IconButton
+              size="small"
+              className="item-row-edit-affordance"
+              onClick={(e) => {
+                e.stopPropagation();
+                onStartNameEdit?.(item);
+              }}
+              title="Rename"
+              aria-label={`Rename ${item.name}`}
+              sx={{
+                opacity: 0,
+                transition: 'opacity 120ms',
+                flexShrink: 0,
+                // Keyboard users can't trigger hover; reveal on focus so the
+                // affordance is visible and the focus ring is discoverable.
+                '&:focus-visible': { opacity: 1 }
+              }}
+            >
+              <IconPencil size={14} />
+            </IconButton>
             {canArchive && (
               <IconButton
                 size="small"
@@ -734,6 +763,7 @@ export default function BoardTable({
                   onCancelEdit={() => { setEditingItemId(''); setDraftName(''); }}
                   onNameClick={handleNameClick}
                   onNameDoubleClick={handleNameDoubleClick}
+                  onStartNameEdit={startEditName}
                   onStatusChange={handleStatusChange}
                   onOpenPeoplePicker={openPeoplePicker}
                   onOpenLabelPicker={openLabelPicker}
