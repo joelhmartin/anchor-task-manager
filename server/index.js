@@ -190,7 +190,8 @@ const MIGRATIONS = [
   'task-subitem-workflow.sql',
   'task-updates-threading.sql',
   'task-files-storage.sql',
-  'task-subitem-position.sql'
+  'task-subitem-position.sql',
+  'task-item-followers.sql'
 ];
 
 async function runMigrationFile(file) {
