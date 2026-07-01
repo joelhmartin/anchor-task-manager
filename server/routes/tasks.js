@@ -503,7 +503,7 @@ async function fanOutUpdateNotifications({ itemId, workspaceId, actorUserId, con
       replyTargets = [replyUser.id];
     }
   }
-  if (!mentioned.length && !replyTargets.length) return;
+  if (!mentioned.length && !replyTargets.length) return [];
 
   const { rows: itemRows } = await query('SELECT id, name FROM task_items WHERE id = $1 LIMIT 1', [itemId]);
   const itemName = itemRows[0]?.name || 'Task item';
@@ -546,6 +546,50 @@ async function fanOutUpdateNotifications({ itemId, workspaceId, actorUserId, con
     );
   }
   await Promise.all(sends);
+  return [...new Set([...mentioned, ...replyTargets])];
+}
+
+// Item followers = explicit `task_item_followers` rows UNION current assignees.
+// Assignees are implicit stakeholders — they get notified on activity without
+// having to click Follow. Actor is excluded (never notify yourself).
+async function getItemFollowerAudience({ itemId, actorUserId, excludeUserIds = [] }) {
+  const exclude = new Set([actorUserId, ...excludeUserIds].filter(Boolean));
+  const { rows } = await query(
+    `SELECT DISTINCT user_id FROM (
+       SELECT user_id FROM task_item_followers WHERE item_id = $1
+       UNION
+       SELECT user_id FROM task_item_assignees WHERE item_id = $1
+     ) f`,
+    [itemId]
+  );
+  return rows.map((r) => r.user_id).filter((uid) => uid && !exclude.has(uid));
+}
+
+async function fanOutFollowerNotifications({
+  itemId, workspaceId, actorUserId, excludeUserIds = [], title, body, meta = {}
+}) {
+  const audience = await getItemFollowerAudience({ itemId, actorUserId, excludeUserIds });
+  if (!audience.length) return;
+  const boardId = await getBoardIdForItem(itemId);
+  const linkUrl = boardId
+    ? `/tasks?pane=boards&board=${encodeURIComponent(boardId)}&item=${encodeURIComponent(itemId)}`
+    : '/tasks?pane=boards';
+  await Promise.all(
+    audience.map((uid) =>
+      createNotification({
+        userId: uid,
+        title,
+        body,
+        linkUrl,
+        meta: {
+          item_id: itemId,
+          workspace_id: workspaceId,
+          actor_user_id: actorUserId,
+          ...meta
+        }
+      })
+    )
+  );
 }
 
 async function getWorkspaceIdForBoard(boardId) {
@@ -2433,6 +2477,28 @@ router.patch('/items/:itemId', async (req, res) => {
       });
     }
 
+    // Fan out follower notifications for status/due-date changes.
+    // Silent fields (name-only, is_voicemail, needs_attention) skip the fanout
+    // to avoid notification spam; comment updates fan out via the /updates path.
+    if (statusChanged || dueDateChanged) {
+      const title = statusChanged
+        ? `Task status changed to "${itemAfter.status}"`
+        : 'Task due date changed';
+      fanOutFollowerNotifications({
+        itemId,
+        workspaceId,
+        actorUserId: req.user.id,
+        title,
+        body: itemAfter.name,
+        meta: {
+          source: statusChanged ? 'task_status_changed' : 'task_due_date_changed',
+          ...(statusChanged
+            ? { old_status: itemBefore.status, new_status: itemAfter.status }
+            : { old_due_date: itemBefore.due_date, new_due_date: itemAfter.due_date })
+        }
+      }).catch((err) => console.error('[tasks:items:notify-followers]', err));
+    }
+
     return res.json({ item: itemAfter });
   } catch (err) {
     if (err instanceof z.ZodError) return res.status(400).json({ message: err.issues[0]?.message || 'Invalid payload' });
@@ -3403,14 +3469,28 @@ router.post('/items/:itemId/updates', async (req, res) => {
        RETURNING *`,
       [itemId, req.user.id, payload.content, payload.parent_update_id || null]
     );
-    // Fire-and-forget mention + reply notifications.
-    fanOutUpdateNotifications({
-      itemId,
-      workspaceId,
-      actorUserId: req.user.id,
-      content: payload.content,
-      replyToUserId: parentAuthorId
-    }).catch((err) => console.error('[tasks:mentions]', err));
+    // Fire-and-forget mention + reply notifications, then fan out to followers
+    // (deduped against anyone already notified as a mention/reply target).
+    (async () => {
+      const notified = await fanOutUpdateNotifications({
+        itemId,
+        workspaceId,
+        actorUserId: req.user.id,
+        content: payload.content,
+        replyToUserId: parentAuthorId
+      });
+      const { rows: nameRows } = await query('SELECT name FROM task_items WHERE id = $1 LIMIT 1', [itemId]);
+      const itemName = nameRows[0]?.name || 'Task item';
+      await fanOutFollowerNotifications({
+        itemId,
+        workspaceId,
+        actorUserId: req.user.id,
+        excludeUserIds: notified || [],
+        title: 'New activity on a task you follow',
+        body: itemName,
+        meta: { source: 'task_update' }
+      });
+    })().catch((err) => console.error('[tasks:updates:notify]', err));
     const updBoardId = await getBoardIdForItem(itemId);
     emitTaskEvent({
       event_type: payload.parent_update_id ? 'update.reply_created' : 'update.created',
@@ -4129,6 +4209,82 @@ router.delete('/items/:itemId/assignees/:assigneeUserId', async (req, res) => {
   } catch (err) {
     console.error('[tasks:assignees:remove]', err);
     return res.status(500).json({ message: 'Unable to remove assignee' });
+  }
+});
+
+// ── Item followers (self-service subscribe / unsubscribe) ──
+// A user follows an item to receive notifications on status/due-date changes and
+// new comment activity — without being assigned. Only the current user can
+// follow / unfollow themselves; assignees are already implicit followers, so
+// the /follow endpoints do not need to expose per-user admin controls.
+async function loadFollowState({ itemId, userId }) {
+  const { rows } = await query(
+    `SELECT
+       EXISTS (SELECT 1 FROM task_item_followers WHERE item_id = $1 AND user_id = $2) AS following,
+       (SELECT COUNT(*) FROM task_item_followers WHERE item_id = $1)                  AS count`,
+    [itemId, userId]
+  );
+  return { following: !!rows[0]?.following, count: Number(rows[0]?.count || 0) };
+}
+
+router.get('/items/:itemId/follow', async (req, res) => {
+  const eff = getEffectiveRole(req);
+  const userId = req.user.id;
+  const { itemId } = req.params;
+  try {
+    const workspaceId = await getWorkspaceIdForItem(itemId);
+    if (!workspaceId) return res.status(404).json({ message: 'Item not found' });
+    const ok = await assertWorkspaceAccess({ effRole: eff, userId, workspaceId });
+    if (!ok) return res.status(403).json({ message: 'Insufficient permissions' });
+    const state = await loadFollowState({ itemId, userId });
+    return res.json(state);
+  } catch (err) {
+    console.error('[tasks:followers:get]', err);
+    return res.status(500).json({ message: 'Unable to load follow state' });
+  }
+});
+
+router.post('/items/:itemId/follow', async (req, res) => {
+  const eff = getEffectiveRole(req);
+  const userId = req.user.id;
+  const { itemId } = req.params;
+  try {
+    const workspaceId = await getWorkspaceIdForItem(itemId);
+    if (!workspaceId) return res.status(404).json({ message: 'Item not found' });
+    const ok = await assertWorkspaceAccess({ effRole: eff, userId, workspaceId });
+    if (!ok) return res.status(403).json({ message: 'Insufficient permissions' });
+    await query(
+      `INSERT INTO task_item_followers (item_id, user_id)
+       VALUES ($1, $2)
+       ON CONFLICT (item_id, user_id) DO NOTHING`,
+      [itemId, userId]
+    );
+    const state = await loadFollowState({ itemId, userId });
+    return res.json(state);
+  } catch (err) {
+    console.error('[tasks:followers:add]', err);
+    return res.status(500).json({ message: 'Unable to follow item' });
+  }
+});
+
+router.delete('/items/:itemId/follow', async (req, res) => {
+  const eff = getEffectiveRole(req);
+  const userId = req.user.id;
+  const { itemId } = req.params;
+  try {
+    const workspaceId = await getWorkspaceIdForItem(itemId);
+    if (!workspaceId) return res.status(404).json({ message: 'Item not found' });
+    const ok = await assertWorkspaceAccess({ effRole: eff, userId, workspaceId });
+    if (!ok) return res.status(403).json({ message: 'Insufficient permissions' });
+    await query(
+      `DELETE FROM task_item_followers WHERE item_id = $1 AND user_id = $2`,
+      [itemId, userId]
+    );
+    const state = await loadFollowState({ itemId, userId });
+    return res.json(state);
+  } catch (err) {
+    console.error('[tasks:followers:remove]', err);
+    return res.status(500).json({ message: 'Unable to unfollow item' });
   }
 });
 

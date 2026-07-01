@@ -144,6 +144,19 @@ export function removeTaskItemAssignee(itemId, assigneeUserId) {
   return client.delete(`/tasks/items/${itemId}/assignees/${assigneeUserId}`).then((res) => res.data);
 }
 
+// Item follow / subscribe — returns { following: boolean, count: number }.
+export function fetchTaskItemFollowState(itemId) {
+  return client.get(`/tasks/items/${itemId}/follow`).then((res) => res.data);
+}
+
+export function followTaskItem(itemId) {
+  return client.post(`/tasks/items/${itemId}/follow`).then((res) => res.data);
+}
+
+export function unfollowTaskItem(itemId) {
+  return client.delete(`/tasks/items/${itemId}/follow`).then((res) => res.data);
+}
+
 export function fetchTaskItemSubitems(itemId) {
   return client.get(`/tasks/items/${itemId}/subitems`).then((res) => res.data.subitems || []);
 }
