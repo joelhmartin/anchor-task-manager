@@ -6,8 +6,8 @@ import {
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import {
-  IconCheck, IconChecks, IconClock, IconEye, IconFile, IconFileTypePdf, IconGripVertical,
-  IconHistory, IconPencil, IconPhoto, IconPlus, IconRepeat, IconTrash, IconX
+  IconBell, IconBellOff, IconCheck, IconChecks, IconClock, IconEye, IconFile, IconFileTypePdf,
+  IconGripVertical, IconHistory, IconPencil, IconPhoto, IconPlus, IconRepeat, IconTrash, IconX
 } from '@tabler/icons-react';
 import { DndContext, closestCenter, PointerSensor, KeyboardSensor, useSensor, useSensors } from '@dnd-kit/core';
 import {
@@ -23,7 +23,8 @@ import {
   fetchItemDependencies, addItemDependency, removeItemDependency,
   fetchItemRecurrence, setItemRecurrence, removeItemRecurrence,
   fetchItemLinks, createItemLink, deleteItemLink, searchItems,
-  fetchTaskFileContent
+  fetchTaskFileContent,
+  fetchTaskItemFollowState, followTaskItem, unfollowTaskItem
 } from 'api/tasks';
 import { clampNonNegInt, normalizeHm } from '../hooks/useItemTimeTracking';
 import LabelPicker, { LabelChips } from './LabelPicker';
@@ -79,6 +80,14 @@ export default function ItemDrawer({
   const [recurrence, setRecurrence] = useState(null);
   const [recurrenceLoading, setRecurrenceLoading] = useState(false);
   const [recurrenceMenuAnchor, setRecurrenceMenuAnchor] = useState(null);
+
+  // ── Follow / subscribe state ──
+  const [follow, setFollow] = useState({ following: false, is_assignee: false, count: 0 });
+  const [followBusy, setFollowBusy] = useState(false);
+  // Latest activeItem.id — used to discard follow-toggle responses that
+  // resolve after the user has switched to a different item.
+  const activeItemIdRef = useRef(null);
+  activeItemIdRef.current = activeItem?.id || null;
 
   // ── Inline name edit ──
   const [nameEditing, setNameEditing] = useState(false);
@@ -172,6 +181,8 @@ export default function ItemDrawer({
       setRecurrence(null);
       setLinks([]);
       setShowLinkForm(false);
+      setFollow({ following: false, is_assignee: false, count: 0 });
+      setFollowBusy(false);
       return;
     }
     let cancelled = false;
@@ -179,17 +190,30 @@ export default function ItemDrawer({
       setDepsLoading(true);
       setRecurrenceLoading(true);
       setLinksLoading(true);
+      // Reset the bell before we load — otherwise the previous item's follow
+      // state stays clickable while the new fetch is in flight (and would
+      // linger indefinitely if fetchTaskItemFollowState rejects).
+      setFollow({ following: false, is_assignee: false, count: 0 });
+      setFollowBusy(true);
       try {
-        const [depsResult, recResult, linksResult] = await Promise.all([
+        const [depsResult, recResult, linksResult, followResult] = await Promise.all([
           fetchItemDependencies(activeItem.id),
           fetchItemRecurrence(activeItem.id).catch(() => null),
-          fetchItemLinks(activeItem.id).catch(() => [])
+          fetchItemLinks(activeItem.id).catch(() => []),
+          fetchTaskItemFollowState(activeItem.id).catch(() => null)
         ]);
         if (cancelled) return;
         setPredecessors(depsResult?.predecessors || []);
         setSuccessors(depsResult?.successors || []);
         setRecurrence(recResult || null);
         setLinks(linksResult || []);
+        setFollow(followResult
+          ? {
+            following: !!followResult.following,
+            is_assignee: !!followResult.is_assignee,
+            count: Number(followResult.count) || 0
+          }
+          : { following: false, is_assignee: false, count: 0 });
       } catch (err) {
         if (!cancelled) toast.error(err.message || 'Failed to load item details');
       } finally {
@@ -197,6 +221,7 @@ export default function ItemDrawer({
           setDepsLoading(false);
           setRecurrenceLoading(false);
           setLinksLoading(false);
+          setFollowBusy(false);
         }
       }
     };
@@ -204,6 +229,46 @@ export default function ItemDrawer({
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, activeItem?.id]);
+
+  const handleToggleFollow = async () => {
+    if (!activeItem?.id || followBusy) return;
+    const itemId = activeItem.id;
+    const prev = follow;
+    // Optimistic flip: guard the count so it never dips below 0 if state
+    // and the server disagree (e.g. the row was purged out-of-band).
+    const optimistic = prev.following
+      ? { ...prev, following: false, count: Math.max(0, prev.count - 1) }
+      : { ...prev, following: true, count: prev.count + 1 };
+    setFollow(optimistic);
+    setFollowBusy(true);
+    try {
+      const next = prev.following
+        ? await unfollowTaskItem(itemId)
+        : await followTaskItem(itemId);
+      // If the user switched items mid-flight, the new drawer owns its own
+      // state — discard this response so we don't stomp it.
+      if (activeItemIdRef.current !== itemId) return;
+      setFollow({
+        following: !!next.following,
+        is_assignee: 'is_assignee' in next ? !!next.is_assignee : prev.is_assignee,
+        count: Number(next.count) || 0
+      });
+      if (prev.following) {
+        toast.success(prev.is_assignee
+          ? 'Unfollowed — you’ll still be notified as an assignee'
+          : 'Unfollowed');
+      } else {
+        toast.success('Following — you’ll get task activity notifications');
+      }
+    } catch (err) {
+      if (activeItemIdRef.current === itemId) {
+        setFollow(prev);
+        toast.error(err.message || 'Unable to update follow');
+      }
+    } finally {
+      if (activeItemIdRef.current === itemId) setFollowBusy(false);
+    }
+  };
 
   // Filter items available as dependency targets (same board, not self, not already linked)
   const depOptions = boardItems.filter((it) => {
@@ -306,74 +371,103 @@ export default function ItemDrawer({
     <Drawer anchor="right" open={open} onClose={onClose} PaperProps={{ sx: { width: { xs: '100%', sm: '40vw' } } }}>
       <Box sx={{ p: 2 }}>
         <Stack spacing={1.5}>
-          {nameEditing ? (
-            <TextField
-              size="small"
-              fullWidth
-              value={nameDraft}
-              onChange={(e) => setNameDraft(e.target.value)}
-              onBlur={commitNameEdit}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') { e.preventDefault(); commitNameEdit(); }
-                if (e.key === 'Escape') { e.preventDefault(); cancelNameEdit(); }
-              }}
-              disabled={nameSaving}
-              autoFocus
-              inputProps={{
-                maxLength: 500,
-                'aria-label': 'Item name',
-                onFocus: (e) => e.currentTarget.select()
-              }}
-              sx={{
-                '& .MuiInputBase-input': {
-                  fontSize: (theme) => theme.typography.h3.fontSize,
-                  fontWeight: (theme) => theme.typography.h3.fontWeight,
-                  lineHeight: (theme) => theme.typography.h3.lineHeight,
-                  py: 0.5
-                }
-              }}
-            />
-          ) : (
-            <Tooltip title="Click to rename" placement="top-start" enterDelay={400}>
-              <Box
-                onClick={startNameEdit}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startNameEdit(); }
-                }}
-                role="button"
-                tabIndex={0}
-                aria-label={`Rename item: ${activeItem?.name || 'Item'}`}
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 0.75,
-                  cursor: 'text',
-                  borderRadius: 1,
-                  px: 0.5,
-                  mx: -0.5,
-                  py: 0.25,
-                  minHeight: 40,
-                  transition: 'background-color 120ms',
-                  '&:hover': { bgcolor: (theme) => alpha(theme.palette.primary.main, 0.06) },
-                  '&:hover .item-name-edit-indicator': { opacity: 1 },
-                  '&:focus-visible': {
-                    outline: (theme) => `2px solid ${theme.palette.primary.main}`,
-                    outlineOffset: 2
-                  }
-                }}
-              >
-                <Typography variant="h3" sx={{ flex: 1, minWidth: 0, wordBreak: 'break-word' }}>
-                  {activeItem?.name || 'Item'}
-                </Typography>
-                <IconPencil
-                  size={16}
-                  className="item-name-edit-indicator"
-                  style={{ opacity: 0, transition: 'opacity 120ms', flexShrink: 0 }}
-                  aria-hidden="true"
+          <Stack direction="row" alignItems="center" spacing={0.5} sx={{ minWidth: 0 }}>
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              {nameEditing ? (
+                <TextField
+                  size="small"
+                  fullWidth
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  onBlur={commitNameEdit}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); commitNameEdit(); }
+                    if (e.key === 'Escape') { e.preventDefault(); cancelNameEdit(); }
+                  }}
+                  disabled={nameSaving}
+                  autoFocus
+                  inputProps={{
+                    maxLength: 500,
+                    'aria-label': 'Item name',
+                    onFocus: (e) => e.currentTarget.select()
+                  }}
+                  sx={{
+                    '& .MuiInputBase-input': {
+                      fontSize: (theme) => theme.typography.h3.fontSize,
+                      fontWeight: (theme) => theme.typography.h3.fontWeight,
+                      lineHeight: (theme) => theme.typography.h3.lineHeight,
+                      py: 0.5
+                    }
+                  }}
                 />
-              </Box>
+              ) : (
+                <Tooltip title="Click to rename" placement="top-start" enterDelay={400}>
+                  <Box
+                    onClick={startNameEdit}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startNameEdit(); }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Rename item: ${activeItem?.name || 'Item'}`}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 0.75,
+                      cursor: 'text',
+                      borderRadius: 1,
+                      px: 0.5,
+                      mx: -0.5,
+                      py: 0.25,
+                      minHeight: 40,
+                      transition: 'background-color 120ms',
+                      '&:hover': { bgcolor: (theme) => alpha(theme.palette.primary.main, 0.06) },
+                      '&:hover .item-name-edit-indicator': { opacity: 1 },
+                      '&:focus-visible': {
+                        outline: (theme) => `2px solid ${theme.palette.primary.main}`,
+                        outlineOffset: 2
+                      }
+                    }}
+                  >
+                    <Typography variant="h3" sx={{ flex: 1, minWidth: 0, wordBreak: 'break-word' }}>
+                      {activeItem?.name || 'Item'}
+                    </Typography>
+                    <IconPencil
+                      size={16}
+                      className="item-name-edit-indicator"
+                      style={{ opacity: 0, transition: 'opacity 120ms', flexShrink: 0 }}
+                      aria-hidden="true"
+                    />
+                  </Box>
+                </Tooltip>
+              )}
+            </Box>
+            <Tooltip
+              title={
+                follow.following
+                  ? `You’re following${follow.count > 1 ? ` (${follow.count} total)` : ''}${
+                    follow.is_assignee ? ' — click to remove explicit follow (still notified as assignee)' : ' — click to unfollow'
+                  }`
+                  : `${follow.is_assignee ? 'You’re an assignee — click to also follow explicitly' : 'Follow to get task activity notifications'}${
+                    follow.count > 0 ? ` — ${follow.count} following` : ''
+                  }`
+              }
+              placement="top"
+            >
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={handleToggleFollow}
+                  disabled={followBusy || !activeItem?.id}
+                  aria-label={follow.following ? 'Unfollow item' : 'Follow item'}
+                  aria-pressed={follow.following}
+                  sx={{ color: follow.following ? 'primary.main' : 'text.secondary', flexShrink: 0 }}
+                >
+                  {follow.following ? <IconBell size={18} /> : <IconBellOff size={18} />}
+                </IconButton>
+              </span>
             </Tooltip>
-          )}
+          </Stack>
           <Stack spacing={0.5}>
             <Typography variant="caption" color="text.secondary">
               Status
