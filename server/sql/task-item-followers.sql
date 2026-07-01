@@ -7,9 +7,8 @@ CREATE TABLE IF NOT EXISTS task_item_followers (
   PRIMARY KEY (item_id, user_id)
 );
 
--- Item-side lookup is the fanout hot path (per-item notify).
-CREATE INDEX IF NOT EXISTS idx_task_item_followers_item
-  ON task_item_followers (item_id);
+-- The PK (item_id, user_id) already provides a leading-column index on item_id,
+-- so per-item fanout queries use it directly — no dedicated item index needed.
 
 -- User-side lookup powers "items I follow" list views and profile queries.
 CREATE INDEX IF NOT EXISTS idx_task_item_followers_user

@@ -552,23 +552,33 @@ async function fanOutUpdateNotifications({ itemId, workspaceId, actorUserId, con
 // Item followers = explicit `task_item_followers` rows UNION current assignees.
 // Assignees are implicit stakeholders — they get notified on activity without
 // having to click Follow. Actor is excluded (never notify yourself).
-async function getItemFollowerAudience({ itemId, actorUserId, excludeUserIds = [] }) {
+// Each candidate is re-checked against workspace access so stale follower or
+// assignee rows for removed members don't keep receiving notifications.
+async function getItemFollowerAudience({ itemId, workspaceId, actorUserId, excludeUserIds = [] }) {
   const exclude = new Set([actorUserId, ...excludeUserIds].filter(Boolean));
   const { rows } = await query(
-    `SELECT DISTINCT user_id FROM (
-       SELECT user_id FROM task_item_followers WHERE item_id = $1
-       UNION
-       SELECT user_id FROM task_item_assignees WHERE item_id = $1
-     ) f`,
+    `SELECT DISTINCT f.user_id, u.role
+       FROM (
+         SELECT user_id FROM task_item_followers WHERE item_id = $1
+         UNION
+         SELECT user_id FROM task_item_assignees WHERE item_id = $1
+       ) f
+       JOIN users u ON u.id = f.user_id`,
     [itemId]
   );
-  return rows.map((r) => r.user_id).filter((uid) => uid && !exclude.has(uid));
+  const allowed = [];
+  for (const r of rows) {
+    if (!r.user_id || exclude.has(r.user_id)) continue;
+    const ok = await assertWorkspaceAccess({ effRole: r.role, userId: r.user_id, workspaceId });
+    if (ok) allowed.push(r.user_id);
+  }
+  return allowed;
 }
 
 async function fanOutFollowerNotifications({
   itemId, workspaceId, actorUserId, excludeUserIds = [], title, body, meta = {}
 }) {
-  const audience = await getItemFollowerAudience({ itemId, actorUserId, excludeUserIds });
+  const audience = await getItemFollowerAudience({ itemId, workspaceId, actorUserId, excludeUserIds });
   if (!audience.length) return;
   const boardId = await getBoardIdForItem(itemId);
   const linkUrl = boardId
@@ -2481,9 +2491,18 @@ router.patch('/items/:itemId', async (req, res) => {
     // Silent fields (name-only, is_voicemail, needs_attention) skip the fanout
     // to avoid notification spam; comment updates fan out via the /updates path.
     if (statusChanged || dueDateChanged) {
-      const title = statusChanged
-        ? `Task status changed to "${itemAfter.status}"`
-        : 'Task due date changed';
+      let title;
+      let source;
+      if (statusChanged && dueDateChanged) {
+        title = `Task status changed to "${itemAfter.status}" and due date changed`;
+        source = 'task_status_and_due_date_changed';
+      } else if (statusChanged) {
+        title = `Task status changed to "${itemAfter.status}"`;
+        source = 'task_status_changed';
+      } else {
+        title = 'Task due date changed';
+        source = 'task_due_date_changed';
+      }
       fanOutFollowerNotifications({
         itemId,
         workspaceId,
@@ -2491,10 +2510,9 @@ router.patch('/items/:itemId', async (req, res) => {
         title,
         body: itemAfter.name,
         meta: {
-          source: statusChanged ? 'task_status_changed' : 'task_due_date_changed',
-          ...(statusChanged
-            ? { old_status: itemBefore.status, new_status: itemAfter.status }
-            : { old_due_date: itemBefore.due_date, new_due_date: itemAfter.due_date })
+          source,
+          ...(statusChanged && { old_status: itemBefore.status, new_status: itemAfter.status }),
+          ...(dueDateChanged && { old_due_date: itemBefore.due_date, new_due_date: itemAfter.due_date })
         }
       }).catch((err) => console.error('[tasks:items:notify-followers]', err));
     }
@@ -4221,10 +4239,15 @@ async function loadFollowState({ itemId, userId }) {
   const { rows } = await query(
     `SELECT
        EXISTS (SELECT 1 FROM task_item_followers WHERE item_id = $1 AND user_id = $2) AS following,
+       EXISTS (SELECT 1 FROM task_item_assignees WHERE item_id = $1 AND user_id = $2) AS is_assignee,
        (SELECT COUNT(*) FROM task_item_followers WHERE item_id = $1)                  AS count`,
     [itemId, userId]
   );
-  return { following: !!rows[0]?.following, count: Number(rows[0]?.count || 0) };
+  return {
+    following: !!rows[0]?.following,
+    is_assignee: !!rows[0]?.is_assignee,
+    count: Number(rows[0]?.count || 0)
+  };
 }
 
 router.get('/items/:itemId/follow', async (req, res) => {

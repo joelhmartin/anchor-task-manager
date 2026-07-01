@@ -82,8 +82,12 @@ export default function ItemDrawer({
   const [recurrenceMenuAnchor, setRecurrenceMenuAnchor] = useState(null);
 
   // ── Follow / subscribe state ──
-  const [follow, setFollow] = useState({ following: false, count: 0 });
+  const [follow, setFollow] = useState({ following: false, is_assignee: false, count: 0 });
   const [followBusy, setFollowBusy] = useState(false);
+  // Latest activeItem.id — used to discard follow-toggle responses that
+  // resolve after the user has switched to a different item.
+  const activeItemIdRef = useRef(null);
+  activeItemIdRef.current = activeItem?.id || null;
 
   // ── Inline name edit ──
   const [nameEditing, setNameEditing] = useState(false);
@@ -177,7 +181,8 @@ export default function ItemDrawer({
       setRecurrence(null);
       setLinks([]);
       setShowLinkForm(false);
-      setFollow({ following: false, count: 0 });
+      setFollow({ following: false, is_assignee: false, count: 0 });
+      setFollowBusy(false);
       return;
     }
     let cancelled = false;
@@ -185,6 +190,11 @@ export default function ItemDrawer({
       setDepsLoading(true);
       setRecurrenceLoading(true);
       setLinksLoading(true);
+      // Reset the bell before we load — otherwise the previous item's follow
+      // state stays clickable while the new fetch is in flight (and would
+      // linger indefinitely if fetchTaskItemFollowState rejects).
+      setFollow({ following: false, is_assignee: false, count: 0 });
+      setFollowBusy(true);
       try {
         const [depsResult, recResult, linksResult, followResult] = await Promise.all([
           fetchItemDependencies(activeItem.id),
@@ -197,7 +207,13 @@ export default function ItemDrawer({
         setSuccessors(depsResult?.successors || []);
         setRecurrence(recResult || null);
         setLinks(linksResult || []);
-        if (followResult) setFollow({ following: !!followResult.following, count: Number(followResult.count) || 0 });
+        setFollow(followResult
+          ? {
+            following: !!followResult.following,
+            is_assignee: !!followResult.is_assignee,
+            count: Number(followResult.count) || 0
+          }
+          : { following: false, is_assignee: false, count: 0 });
       } catch (err) {
         if (!cancelled) toast.error(err.message || 'Failed to load item details');
       } finally {
@@ -205,6 +221,7 @@ export default function ItemDrawer({
           setDepsLoading(false);
           setRecurrenceLoading(false);
           setLinksLoading(false);
+          setFollowBusy(false);
         }
       }
     };
@@ -215,25 +232,41 @@ export default function ItemDrawer({
 
   const handleToggleFollow = async () => {
     if (!activeItem?.id || followBusy) return;
+    const itemId = activeItem.id;
     const prev = follow;
     // Optimistic flip: guard the count so it never dips below 0 if state
     // and the server disagree (e.g. the row was purged out-of-band).
     const optimistic = prev.following
-      ? { following: false, count: Math.max(0, prev.count - 1) }
-      : { following: true, count: prev.count + 1 };
+      ? { ...prev, following: false, count: Math.max(0, prev.count - 1) }
+      : { ...prev, following: true, count: prev.count + 1 };
     setFollow(optimistic);
     setFollowBusy(true);
     try {
       const next = prev.following
-        ? await unfollowTaskItem(activeItem.id)
-        : await followTaskItem(activeItem.id);
-      setFollow({ following: !!next.following, count: Number(next.count) || 0 });
-      toast.success(prev.following ? 'Unfollowed — no more notifications' : 'Following — you’ll get notifications');
+        ? await unfollowTaskItem(itemId)
+        : await followTaskItem(itemId);
+      // If the user switched items mid-flight, the new drawer owns its own
+      // state — discard this response so we don't stomp it.
+      if (activeItemIdRef.current !== itemId) return;
+      setFollow({
+        following: !!next.following,
+        is_assignee: 'is_assignee' in next ? !!next.is_assignee : prev.is_assignee,
+        count: Number(next.count) || 0
+      });
+      if (prev.following) {
+        toast.success(prev.is_assignee
+          ? 'Unfollowed — you’ll still be notified as an assignee'
+          : 'Unfollowed');
+      } else {
+        toast.success('Following — you’ll get task activity notifications');
+      }
     } catch (err) {
-      setFollow(prev);
-      toast.error(err.message || 'Unable to update follow');
+      if (activeItemIdRef.current === itemId) {
+        setFollow(prev);
+        toast.error(err.message || 'Unable to update follow');
+      }
     } finally {
-      setFollowBusy(false);
+      if (activeItemIdRef.current === itemId) setFollowBusy(false);
     }
   };
 
@@ -412,8 +445,12 @@ export default function ItemDrawer({
             <Tooltip
               title={
                 follow.following
-                  ? `You’re following${follow.count > 1 ? ` (${follow.count} total)` : ''} — click to stop notifications`
-                  : `Follow to get notifications${follow.count > 0 ? ` — ${follow.count} following` : ''}`
+                  ? `You’re following${follow.count > 1 ? ` (${follow.count} total)` : ''}${
+                    follow.is_assignee ? ' — click to remove explicit follow (still notified as assignee)' : ' — click to unfollow'
+                  }`
+                  : `${follow.is_assignee ? 'You’re an assignee — click to also follow explicitly' : 'Follow to get task activity notifications'}${
+                    follow.count > 0 ? ` — ${follow.count} following` : ''
+                  }`
               }
               placement="top"
             >
