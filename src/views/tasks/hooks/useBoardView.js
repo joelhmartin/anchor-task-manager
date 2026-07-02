@@ -4,7 +4,9 @@ import {
   createTaskGroup, deleteTaskGroup, createTaskItem,
   downloadTaskBoardCsv, updateTaskItem, archiveTaskItem,
   addTaskItemAssignee, removeTaskItemAssignee, fetchTaskItemAssignees,
-  fetchItemLabels, applyItemLabel, removeItemLabel
+  fetchItemLabels, applyItemLabel, removeItemLabel,
+  bulkUpdateTaskItemStatus, bulkUpdateTaskItemLabels,
+  bulkUpdateTaskItemAssignees, bulkArchiveTaskItems
 } from 'api/tasks';
 import { DEFAULT_STATUS_LABELS } from 'constants/taskDefaults';
 import { useToast } from 'contexts/ToastContext';
@@ -264,6 +266,81 @@ export default function useBoardView(activeBoardId, activeWorkspaceId, pane, sea
     }
   }, [activeBoardId, pane, loadBoardView, setError]);
 
+  // Bulk mutations powered by the sticky bulk-action toolbar. Each helper
+  // refreshes the board view (and My Work when relevant) once the server
+  // transaction commits so the UI reflects the post-write state.
+  const bulkUpdateStatus = useCallback(async (itemIds, status, { refreshMyWork } = {}) => {
+    if (!itemIds?.length || !status) return { updated_count: 0 };
+    try {
+      const result = await bulkUpdateTaskItemStatus(itemIds, status);
+      toast.success(`Updated ${result.updated_count} item${result.updated_count === 1 ? '' : 's'}`);
+      if (activeBoardId) await loadBoardView(activeBoardId);
+      if (pane === 'my-work' && refreshMyWork) await refreshMyWork();
+      return result;
+    } catch (err) {
+      toast.error(err.message || 'Unable to update items');
+      throw err;
+    }
+  }, [activeBoardId, pane, loadBoardView, toast]);
+
+  const bulkUpdateAssignees = useCallback(async (itemIds, userId, action, { refreshMyWork } = {}) => {
+    if (!itemIds?.length || !userId) return { updated_count: 0 };
+    try {
+      const result = await bulkUpdateTaskItemAssignees(itemIds, userId, action);
+      const verb = action === 'add' ? 'Assigned' : 'Unassigned';
+      toast.success(`${verb} on ${result.updated_count} item${result.updated_count === 1 ? '' : 's'}`);
+      if (activeBoardId) await loadBoardView(activeBoardId);
+      if (pane === 'my-work' && refreshMyWork) await refreshMyWork();
+      return result;
+    } catch (err) {
+      toast.error(err.message || 'Unable to update assignees');
+      throw err;
+    }
+  }, [activeBoardId, pane, loadBoardView, toast]);
+
+  const bulkUpdateLabels = useCallback(async (itemIds, labelId, action) => {
+    if (!itemIds?.length || !labelId) return { updated_count: 0 };
+    try {
+      const result = await bulkUpdateTaskItemLabels(itemIds, labelId, action);
+      const verb = action === 'add' ? 'Added label to' : 'Removed label from';
+      toast.success(`${verb} ${result.updated_count} item${result.updated_count === 1 ? '' : 's'}`);
+      if (activeBoardId) await loadBoardView(activeBoardId);
+      // Refresh labels for the affected items so the table cells re-render.
+      const affected = result.updated_ids || [];
+      if (affected.length) {
+        const fetched = await Promise.all(
+          affected.map((id) => fetchItemLabels(id).then((labels) => ({ id, labels })).catch(() => null))
+        );
+        setItemLabelsMap((prev) => {
+          const next = { ...prev };
+          for (const entry of fetched) {
+            if (entry) next[entry.id] = entry.labels;
+          }
+          return next;
+        });
+      }
+      return result;
+    } catch (err) {
+      toast.error(err.message || 'Unable to update labels');
+      throw err;
+    }
+  }, [activeBoardId, loadBoardView, toast]);
+
+  const bulkArchive = useCallback(async (itemIds, { closeDrawerFn, refreshMyWork, activeItem } = {}) => {
+    if (!itemIds?.length) return { updated_count: 0 };
+    try {
+      const result = await bulkArchiveTaskItems(itemIds);
+      toast.success(`Archived ${result.updated_count} item${result.updated_count === 1 ? '' : 's'}`);
+      if (activeBoardId) await loadBoardView(activeBoardId);
+      if (pane === 'my-work' && refreshMyWork) await refreshMyWork();
+      if (activeItem?.id && itemIds.includes(activeItem.id) && closeDrawerFn) closeDrawerFn();
+      return result;
+    } catch (err) {
+      toast.error(err.message || 'Unable to archive items');
+      throw err;
+    }
+  }, [activeBoardId, pane, loadBoardView, toast]);
+
   const archiveItem = useCallback(async (itemId, { closeDrawerFn, refreshMyWork, activeItem } = {}) => {
     if (!itemId) return;
     try {
@@ -398,6 +475,7 @@ export default function useBoardView(activeBoardId, activeWorkspaceId, pane, sea
     loadBoardView, loadBoardReport,
     handleCreateGroup, handleDeleteGroup, handleCreateItem, handleDownloadCsv,
     updateItemInline, toggleAssigneeInline, archiveItem,
+    bulkUpdateStatus, bulkUpdateAssignees, bulkUpdateLabels, bulkArchive,
     updateStatusLabelsInView, toggleItemLabel, loadItemLabels
   };
 }
