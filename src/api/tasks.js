@@ -281,6 +281,33 @@ export function restoreTaskItem(itemId) {
   return client.post(`/tasks/items/${itemId}/restore`).then((res) => res.data.item);
 }
 
+// Bulk item mutations — back the sticky bulk-action toolbar in BoardTable. Each
+// wraps its writes in a single server-side transaction. Response shape uses the
+// envelope helper: { data: { updated_count, updated_ids } }.
+export function bulkUpdateTaskItemStatus(itemIds, status) {
+  return client
+    .post('/tasks/items/bulk-status', { item_ids: itemIds, status })
+    .then((res) => unwrapData(res, { fallback: { updated_count: 0, updated_ids: [] } }));
+}
+
+export function bulkUpdateTaskItemLabels(itemIds, labelId, action) {
+  return client
+    .post('/tasks/items/bulk-labels', { item_ids: itemIds, label_id: labelId, action })
+    .then((res) => unwrapData(res, { fallback: { updated_count: 0, updated_ids: [] } }));
+}
+
+export function bulkUpdateTaskItemAssignees(itemIds, userId, action) {
+  return client
+    .post('/tasks/items/bulk-assignees', { item_ids: itemIds, user_id: userId, action })
+    .then((res) => unwrapData(res, { fallback: { updated_count: 0, updated_ids: [] } }));
+}
+
+export function bulkArchiveTaskItems(itemIds) {
+  return client
+    .post('/tasks/items/bulk-archive', { item_ids: itemIds })
+    .then((res) => unwrapData(res, { fallback: { updated_count: 0, updated_ids: [] } }));
+}
+
 export function archiveTaskSubitem(subitemId) {
   return client.delete(`/tasks/subitems/${subitemId}`).then((res) => res.data);
 }

@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   Avatar,
@@ -19,9 +19,10 @@ import {
   Slider,
   Stack,
   TextField,
+  Tooltip,
   Typography
 } from '@mui/material';
-import { IconChevronDown, IconChevronRight, IconMessageCircle, IconClock, IconLayoutGrid, IconPencil, IconTrash } from '@tabler/icons-react';
+import { IconChevronDown, IconChevronRight, IconMessageCircle, IconClock, IconLayoutGrid, IconPencil, IconTrash, IconX } from '@tabler/icons-react';
 import ConfirmDialog from 'ui-component/extended/ConfirmDialog';
 import EmptyState from 'ui-component/extended/EmptyState';
 import FormDialog from 'ui-component/extended/FormDialog';
@@ -39,7 +40,8 @@ const ItemRow = memo(function ItemRow({
   onStatusChange, onOpenPeoplePicker, onDueDateChange,
   onOpenLabelPicker,
   onClickItem, onArchiveClick, canArchive, boardId, canManageLabels,
-  mirrorValues = {}
+  mirrorValues = {},
+  isSelected, onToggleSelect
 }) {
   const status = item.status || 'To Do';
   const sc = getStatusColor(status, labels);
@@ -54,9 +56,34 @@ const ItemRow = memo(function ItemRow({
         borderColor: 'divider',
         cursor: 'pointer',
         ...(isHighlighted && { bgcolor: 'action.selected' }),
+        ...(isSelected && { bgcolor: 'action.selected' }),
         '&:hover': { bgcolor: 'action.hover' }
       }}
     >
+      {/* select */}
+      <Box
+        sx={{
+          p: 0.5,
+          borderRight: '1px solid',
+          borderColor: 'divider',
+          position: 'sticky',
+          left: 0,
+          zIndex: 3,
+          bgcolor: 'background.default',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Checkbox
+          size="small"
+          checked={Boolean(isSelected)}
+          onChange={(e) => onToggleSelect?.(item.id, e.target.checked, e.nativeEvent?.shiftKey)}
+          inputProps={{ 'aria-label': `Select ${item.name}` }}
+        />
+      </Box>
+
       {/* name */}
       <Box
         sx={{
@@ -64,7 +91,7 @@ const ItemRow = memo(function ItemRow({
           borderRight: '1px solid',
           borderColor: 'divider',
           position: 'sticky',
-          left: 0,
+          left: 44,
           zIndex: 3,
           bgcolor: 'background.default'
         }}
@@ -267,6 +294,7 @@ const ItemRow = memo(function ItemRow({
   // Only re-render when data props change, not function refs
   return prev.item === next.item
     && prev.isHighlighted === next.isHighlighted
+    && prev.isSelected === next.isSelected
     && prev.isEditing === next.isEditing
     && (!prev.isEditing || prev.draftName === next.draftName)
     && prev.assignees === next.assignees
@@ -311,13 +339,188 @@ export default function BoardTable({
   onCreateItem,
   mirrorColumns = [],
   mirrorData = {},
-  loading = false
+  loading = false,
+  onBulkStatus,
+  onBulkAssignees,
+  onBulkLabels,
+  onBulkArchive
 }) {
   const labels = statusLabels.length ? statusLabels : DEFAULT_STATUS_LABELS;
   const [collapsedGroups, setCollapsedGroups] = useState({});
   const [editingItemId, setEditingItemId] = useState('');
   const [draftName, setDraftName] = useState('');
   const clickTimerRef = useRef(null);
+
+  // ── Bulk selection state ──
+  // Empty Set → no bulk toolbar; non-empty → sticky toolbar visible. Shift-click
+  // extends the selection between the last-toggled row and the newly clicked
+  // one (like Gmail / Finder). Selection resets when the board switches.
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const lastToggledIdRef = useRef(null);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+    lastToggledIdRef.current = null;
+  }, [boardId]);
+
+  // Flat visible-item order (respects collapsed groups, group order, and item
+  // order within each group). Used to compute shift-click ranges and to prune
+  // selection when items disappear (archive, delete, filter).
+  const visibleItemIds = useMemo(() => {
+    const ids = [];
+    for (const g of groups) {
+      if (collapsedGroups[g.id]) continue;
+      const items = itemsByGroup[g.id] || [];
+      for (const item of items) ids.push(item.id);
+    }
+    return ids;
+  }, [groups, itemsByGroup, collapsedGroups]);
+
+  // Prune selection when items disappear (archive, delete, filter change) so
+  // "3 selected" can't lie about untargetable rows.
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (!prev.size) return prev;
+      const visible = new Set(visibleItemIds);
+      let changed = false;
+      const next = new Set();
+      for (const id of prev) {
+        if (visible.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [visibleItemIds]);
+
+  const toggleSelect = useCallback((itemId, isSelected, isShiftKey) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const anchor = lastToggledIdRef.current;
+      if (isShiftKey && anchor && anchor !== itemId) {
+        const anchorIdx = visibleItemIds.indexOf(anchor);
+        const targetIdx = visibleItemIds.indexOf(itemId);
+        if (anchorIdx !== -1 && targetIdx !== -1) {
+          const [lo, hi] = anchorIdx < targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
+          for (let i = lo; i <= hi; i++) {
+            if (isSelected) next.add(visibleItemIds[i]);
+            else next.delete(visibleItemIds[i]);
+          }
+        }
+      } else if (isSelected) {
+        next.add(itemId);
+      } else {
+        next.delete(itemId);
+      }
+      return next;
+    });
+    lastToggledIdRef.current = itemId;
+  }, [visibleItemIds]);
+
+  const toggleSelectGroup = useCallback((groupId, isSelected) => {
+    const groupItemIds = (itemsByGroup[groupId] || []).map((it) => it.id);
+    if (!groupItemIds.length) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of groupItemIds) {
+        if (isSelected) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }, [itemsByGroup]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    lastToggledIdRef.current = null;
+  }, []);
+
+  // Escape clears selection when the toolbar is showing — the standard
+  // keyboard-first "get me out of bulk mode" affordance.
+  useEffect(() => {
+    if (!selectedIds.size) return undefined;
+    const handleKey = (e) => {
+      if (e.key === 'Escape') clearSelection();
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [selectedIds.size, clearSelection]);
+
+  const selectedIdsArray = useMemo(() => Array.from(selectedIds), [selectedIds]);
+
+  // ── Bulk toolbar picker state ──
+  const [bulkStatusAnchor, setBulkStatusAnchor] = useState(null);
+  const [bulkAssigneeAnchor, setBulkAssigneeAnchor] = useState(null);
+  const [bulkAssigneeQuery, setBulkAssigneeQuery] = useState('');
+  const [bulkLabelAnchor, setBulkLabelAnchor] = useState(null);
+  const [bulkLabelQuery, setBulkLabelQuery] = useState('');
+  const [bulkArchiveConfirmOpen, setBulkArchiveConfirmOpen] = useState(false);
+  const [bulkPending, setBulkPending] = useState(false);
+
+  const bulkAssigneeMatches = useMemo(() => {
+    const q = bulkAssigneeQuery.trim().toLowerCase();
+    const list = Array.isArray(workspaceMembers) ? workspaceMembers : [];
+    if (!q) return list;
+    return list.filter((m) => {
+      const email = String(m.email || '').toLowerCase();
+      const name = clientLabel(m).toLowerCase();
+      return email.includes(q) || name.includes(q);
+    });
+  }, [workspaceMembers, bulkAssigneeQuery]);
+
+  const bulkLabelMatches = useMemo(() => {
+    const q = bulkLabelQuery.trim().toLowerCase();
+    const list = Array.isArray(workspaceLabels) ? workspaceLabels : [];
+    if (!q) return list;
+    return list.filter((l) => String(l.label || '').toLowerCase().includes(q));
+  }, [workspaceLabels, bulkLabelQuery]);
+
+  const runBulk = useCallback(async (fn) => {
+    if (bulkPending) return;
+    setBulkPending(true);
+    try {
+      await fn();
+    } finally {
+      setBulkPending(false);
+    }
+  }, [bulkPending]);
+
+  const handleBulkStatusPick = (statusValue) => {
+    if (!onBulkStatus || !selectedIdsArray.length) return;
+    setBulkStatusAnchor(null);
+    runBulk(async () => {
+      await onBulkStatus(selectedIdsArray, statusValue);
+      clearSelection();
+    });
+  };
+
+  const handleBulkAssigneePick = (userId, action) => {
+    if (!onBulkAssignees || !selectedIdsArray.length || !userId) return;
+    setBulkAssigneeAnchor(null);
+    setBulkAssigneeQuery('');
+    runBulk(async () => {
+      await onBulkAssignees(selectedIdsArray, userId, action);
+      clearSelection();
+    });
+  };
+
+  const handleBulkLabelPick = (labelId, action) => {
+    if (!onBulkLabels || !selectedIdsArray.length || !labelId) return;
+    setBulkLabelAnchor(null);
+    setBulkLabelQuery('');
+    runBulk(async () => {
+      await onBulkLabels(selectedIdsArray, labelId, action);
+      clearSelection();
+    });
+  };
+
+  const handleBulkArchiveConfirm = () => {
+    if (!onBulkArchive || !selectedIdsArray.length) return;
+    setBulkArchiveConfirmOpen(false);
+    runBulk(async () => {
+      await onBulkArchive(selectedIdsArray);
+      clearSelection();
+    });
+  };
 
   // Status label creator dialog state
   const [addLabelOpen, setAddLabelOpen] = useState(false);
@@ -505,6 +708,7 @@ export default function BoardTable({
   };
 
   const baseColumns = [
+    { key: 'select', label: '', width: 44, sticky: true },
     { key: 'name', label: '', width: 320, sticky: true },
     { key: 'status', label: 'Status', width: 160 },
     { key: 'labels', label: 'Labels', width: 160 },
@@ -600,6 +804,13 @@ export default function BoardTable({
             if (entry.type === 'group-header') {
               const g = entry.group;
               const collapsed = Boolean(collapsedGroups[g.id]);
+              const groupItems = itemsByGroup[g.id] || [];
+              const selectedInGroup = groupItems.reduce(
+                (acc, it) => acc + (selectedIds.has(it.id) ? 1 : 0),
+                0
+              );
+              const allInGroupSelected = groupItems.length > 0 && selectedInGroup === groupItems.length;
+              const someInGroupSelected = selectedInGroup > 0 && !allInGroupSelected;
               return (
                 <Box
                   key={entry.key}
@@ -629,7 +840,7 @@ export default function BoardTable({
                   >
                     <Box
                       sx={{
-                        p: 1,
+                        p: 0.5,
                         borderRight: '1px solid',
                         borderColor: 'divider',
                         position: 'sticky',
@@ -637,7 +848,30 @@ export default function BoardTable({
                         zIndex: 6,
                         bgcolor: 'grey.100',
                         borderTopLeftRadius: 8,
-                        ...(collapsed && { borderBottomLeftRadius: 8 })
+                        ...(collapsed && { borderBottomLeftRadius: 8 }),
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}
+                    >
+                      <Checkbox
+                        size="small"
+                        checked={allInGroupSelected}
+                        indeterminate={someInGroupSelected}
+                        onChange={(e) => toggleSelectGroup(g.id, e.target.checked)}
+                        disabled={!groupItems.length}
+                        inputProps={{ 'aria-label': `Select all items in ${g.name}` }}
+                      />
+                    </Box>
+                    <Box
+                      sx={{
+                        p: 1,
+                        borderRight: '1px solid',
+                        borderColor: 'divider',
+                        position: 'sticky',
+                        left: 44,
+                        zIndex: 6,
+                        bgcolor: 'grey.100'
                       }}
                     >
                       <Stack direction="row" spacing={1} alignItems="center">
@@ -669,7 +903,7 @@ export default function BoardTable({
                         )}
                       </Stack>
                     </Box>
-                    {columns.slice(1).map((c) => (
+                    {columns.slice(2).map((c) => (
                       <Box
                         key={`${g.id}-${c.key}-hdr`}
                         sx={{
@@ -756,6 +990,8 @@ export default function BoardTable({
                   updateCount={updateCountsByItem[it.id] || 0}
                   timeTotal={timeTotalsByItem[it.id] || 0}
                   isHighlighted={highlightedItemId === it.id}
+                  isSelected={selectedIds.has(it.id)}
+                  onToggleSelect={toggleSelect}
                   isEditing={editingItemId === it.id}
                   draftName={draftName}
                   onDraftNameChange={setDraftName}
@@ -780,6 +1016,253 @@ export default function BoardTable({
           })}
         </Box>
       </Box>
+
+      {selectedIdsArray.length > 0 && (
+        <Paper
+          role="toolbar"
+          aria-label={`Bulk actions for ${selectedIdsArray.length} selected items`}
+          elevation={4}
+          sx={{
+            position: 'sticky',
+            bottom: 0,
+            zIndex: 10,
+            m: 1,
+            px: 2,
+            py: 1,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1,
+            flexWrap: 'wrap',
+            borderTop: '1px solid',
+            borderColor: 'divider',
+            bgcolor: 'background.paper'
+          }}
+        >
+          <Chip
+            label={`${selectedIdsArray.length} selected`}
+            color="primary"
+            variant="filled"
+            size="small"
+          />
+          <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={(e) => setBulkStatusAnchor(bulkStatusAnchor ? null : e.currentTarget)}
+            disabled={bulkPending}
+          >
+            Status
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={(e) => setBulkAssigneeAnchor(bulkAssigneeAnchor ? null : e.currentTarget)}
+            disabled={bulkPending}
+          >
+            Assignee
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={(e) => setBulkLabelAnchor(bulkLabelAnchor ? null : e.currentTarget)}
+            disabled={bulkPending || !workspaceLabels?.length}
+          >
+            Label
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            color="error"
+            startIcon={<IconTrash size={16} />}
+            onClick={() => setBulkArchiveConfirmOpen(true)}
+            disabled={bulkPending || !onBulkArchive}
+          >
+            Archive
+          </Button>
+          <Box sx={{ flex: 1 }} />
+          <Tooltip title="Clear selection (Esc)">
+            <IconButton size="small" onClick={clearSelection} aria-label="Clear selection">
+              <IconX size={16} />
+            </IconButton>
+          </Tooltip>
+        </Paper>
+      )}
+
+      {/* Bulk status picker */}
+      <Popper
+        open={Boolean(bulkStatusAnchor)}
+        anchorEl={bulkStatusAnchor}
+        placement="top-start"
+        sx={{ zIndex: 2000 }}
+      >
+        <ClickAwayListener onClickAway={() => setBulkStatusAnchor(null)}>
+          <Paper sx={{ p: 1, minWidth: 200 }}>
+            <Stack spacing={0.5}>
+              <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
+                Set status for {selectedIdsArray.length} items
+              </Typography>
+              {labels.map((sl) => {
+                const sc = getStatusColor(sl.label, labels);
+                return (
+                  <Button
+                    key={sl.id || sl.label}
+                    size="small"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => handleBulkStatusPick(sl.label)}
+                    sx={{
+                      justifyContent: 'flex-start',
+                      textTransform: 'none',
+                      color: sc.fg,
+                      bgcolor: sc.bg,
+                      '&:hover': { bgcolor: sc.bg, opacity: 0.9 }
+                    }}
+                  >
+                    <Box
+                      component="span"
+                      sx={{
+                        display: 'inline-block',
+                        width: 10,
+                        height: 10,
+                        borderRadius: '50%',
+                        bgcolor: sl.color,
+                        mr: 1
+                      }}
+                    />
+                    {sl.label}
+                  </Button>
+                );
+              })}
+            </Stack>
+          </Paper>
+        </ClickAwayListener>
+      </Popper>
+
+      {/* Bulk assignee picker */}
+      <Popper
+        open={Boolean(bulkAssigneeAnchor)}
+        anchorEl={bulkAssigneeAnchor}
+        placement="top-start"
+        sx={{ zIndex: 2000 }}
+      >
+        <ClickAwayListener onClickAway={() => { setBulkAssigneeAnchor(null); setBulkAssigneeQuery(''); }}>
+          <Paper sx={{ p: 1, width: 320 }}>
+            <Stack spacing={1}>
+              <Typography variant="caption" color="text.secondary">
+                Assign / unassign a member on {selectedIdsArray.length} items
+              </Typography>
+              <TextField
+                size="small"
+                autoFocus
+                placeholder="Search members"
+                value={bulkAssigneeQuery}
+                onChange={(e) => setBulkAssigneeQuery(e.target.value)}
+                InputProps={{ startAdornment: <InputAdornment position="start">@</InputAdornment> }}
+              />
+              <Box sx={{ maxHeight: 240, overflow: 'auto' }}>
+                <Stack spacing={0.5}>
+                  {bulkAssigneeMatches.slice(0, 25).map((m) => {
+                    const label = clientLabel(m);
+                    return (
+                      <Stack
+                        key={m.user_id}
+                        direction="row"
+                        spacing={0.5}
+                        alignItems="center"
+                        sx={{ px: 0.5 }}
+                      >
+                        <Avatar src={m.avatar_url || ''} sx={{ width: 22, height: 22, fontSize: 11 }}>
+                          {(label || 'U').slice(0, 1).toUpperCase()}
+                        </Avatar>
+                        <Typography variant="body2" sx={{ flex: 1, minWidth: 0 }} noWrap title={label}>
+                          {label}
+                        </Typography>
+                        <Button size="small" onMouseDown={(e) => e.preventDefault()} onClick={() => handleBulkAssigneePick(m.user_id, 'add')}>
+                          Add
+                        </Button>
+                        <Button size="small" color="error" onMouseDown={(e) => e.preventDefault()} onClick={() => handleBulkAssigneePick(m.user_id, 'remove')}>
+                          Remove
+                        </Button>
+                      </Stack>
+                    );
+                  })}
+                  {!bulkAssigneeMatches.length && (
+                    <Typography variant="body2" color="text.secondary">
+                      No matches.
+                    </Typography>
+                  )}
+                </Stack>
+              </Box>
+            </Stack>
+          </Paper>
+        </ClickAwayListener>
+      </Popper>
+
+      {/* Bulk label picker */}
+      <Popper
+        open={Boolean(bulkLabelAnchor)}
+        anchorEl={bulkLabelAnchor}
+        placement="top-start"
+        sx={{ zIndex: 2000 }}
+      >
+        <ClickAwayListener onClickAway={() => { setBulkLabelAnchor(null); setBulkLabelQuery(''); }}>
+          <Paper sx={{ p: 1, width: 320 }}>
+            <Stack spacing={1}>
+              <Typography variant="caption" color="text.secondary">
+                Add / remove a label on {selectedIdsArray.length} items
+              </Typography>
+              <TextField
+                size="small"
+                autoFocus
+                placeholder="Search labels"
+                value={bulkLabelQuery}
+                onChange={(e) => setBulkLabelQuery(e.target.value)}
+              />
+              <Box sx={{ maxHeight: 240, overflow: 'auto' }}>
+                <Stack spacing={0.5}>
+                  {bulkLabelMatches.slice(0, 40).map((l) => (
+                    <Stack
+                      key={l.id}
+                      direction="row"
+                      spacing={0.5}
+                      alignItems="center"
+                      sx={{ px: 0.5 }}
+                    >
+                      <Box
+                        component="span"
+                        sx={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', bgcolor: l.color || DEFAULT_LABEL_COLOR }}
+                      />
+                      <Typography variant="body2" sx={{ flex: 1, minWidth: 0 }} noWrap title={l.label}>
+                        {l.label}
+                      </Typography>
+                      <Button size="small" onMouseDown={(e) => e.preventDefault()} onClick={() => handleBulkLabelPick(l.id, 'add')}>
+                        Add
+                      </Button>
+                      <Button size="small" color="error" onMouseDown={(e) => e.preventDefault()} onClick={() => handleBulkLabelPick(l.id, 'remove')}>
+                        Remove
+                      </Button>
+                    </Stack>
+                  ))}
+                  {!bulkLabelMatches.length && (
+                    <Typography variant="body2" color="text.secondary">
+                      No matches.
+                    </Typography>
+                  )}
+                </Stack>
+              </Box>
+            </Stack>
+          </Paper>
+        </ClickAwayListener>
+      </Popper>
+
+      <ConfirmDialog
+        open={bulkArchiveConfirmOpen}
+        onClose={() => setBulkArchiveConfirmOpen(false)}
+        onConfirm={handleBulkArchiveConfirm}
+        title="Archive selected items?"
+        message={`This will archive ${selectedIdsArray.length} item${selectedIdsArray.length === 1 ? '' : 's'} for 30 days, then they will be permanently deleted.`}
+        confirmLabel="Archive"
+        confirmColor="error"
+      />
 
       <Popper open={peopleOpen} anchorEl={peopleAnchor} placement="bottom-start" sx={{ zIndex: 2000 }}>
         <ClickAwayListener onClickAway={closePeoplePicker}>

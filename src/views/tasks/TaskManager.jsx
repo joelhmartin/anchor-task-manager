@@ -208,6 +208,21 @@ export default function TaskManager() {
   const handleToggleItemLabel = (itemId, labelId, isApplied) =>
     board.toggleItemLabel(itemId, labelId, isApplied);
 
+  // Bulk-action toolbar wiring. Each handler delegates to useBoardView, which
+  // owns the mutation + refresh cycle and shows the success/error toast.
+  const handleBulkStatus = (itemIds, status) =>
+    board.bulkUpdateStatus(itemIds, status, { refreshMyWork: myWork.refreshMyWork });
+  const handleBulkAssignees = (itemIds, userId, action) =>
+    board.bulkUpdateAssignees(itemIds, userId, action, { refreshMyWork: myWork.refreshMyWork });
+  const handleBulkLabels = (itemIds, labelId, action) =>
+    board.bulkUpdateLabels(itemIds, labelId, action);
+  const handleBulkArchive = (itemIds) =>
+    board.bulkArchive(itemIds, {
+      closeDrawerFn: drawer.closeItemDrawer,
+      refreshMyWork: myWork.refreshMyWork,
+      activeItem: drawer.activeItem
+    });
+
   const handleUpdateItemField = (patch) =>
     drawer.updateItemField(patch, {
       loadBoardView: board.loadBoardView,
@@ -412,6 +427,10 @@ export default function TaskManager() {
               onClickItem={(it, tab) => handleOpenItemDrawer(it, tab)}
               mirrorColumns={mirrorColumns}
               mirrorData={mirrorData}
+              onBulkStatus={handleBulkStatus}
+              onBulkAssignees={handleBulkAssignees}
+              onBulkLabels={handleBulkLabels}
+              onBulkArchive={handleBulkArchive}
             />
           </Stack>
         )}

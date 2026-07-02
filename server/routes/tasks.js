@@ -2619,6 +2619,460 @@ router.post('/items/:itemId/restore', async (req, res) => {
   }
 });
 
+// ── Bulk item mutations ─────────────────────────────────────────────────
+//
+// These endpoints back the sticky bulk-action toolbar in BoardTable. Each is
+// wrapped in a single transaction (all-or-nothing) so a partial write can't
+// leave the board in a torn state. In-app / email notifications are
+// intentionally suppressed on bulk paths — a user selecting 50 rows and
+// re-assigning them shouldn't fan out 50 notifications to the assignee. The
+// underlying `assignee.added` / `item.status_changed` events are still emitted
+// so automations can react per-item; each event carries `metadata.bulk = true`
+// so downstream subscribers can distinguish bulk from single-item writes.
+
+const BULK_MAX_ITEMS = 200;
+
+const itemBulkStatusSchema = z.object({
+  item_ids: z.array(z.string().uuid()).min(1).max(BULK_MAX_ITEMS),
+  status: z.string().min(1).max(100)
+});
+
+const itemBulkLabelSchema = z.object({
+  item_ids: z.array(z.string().uuid()).min(1).max(BULK_MAX_ITEMS),
+  label_id: z.string().uuid(),
+  action: z.enum(['add', 'remove'])
+});
+
+const itemBulkAssigneeSchema = z.object({
+  item_ids: z.array(z.string().uuid()).min(1).max(BULK_MAX_ITEMS),
+  user_id: z.string().uuid(),
+  action: z.enum(['add', 'remove'])
+});
+
+const itemBulkArchiveSchema = z.object({
+  item_ids: z.array(z.string().uuid()).min(1).max(BULK_MAX_ITEMS)
+});
+
+// Load active items with workspace/board context; used by every bulk endpoint.
+async function loadItemsForBulk(itemIds) {
+  const { rows } = await query(
+    `SELECT i.id, i.status, i.name, i.board_id, i.group_id, i.archived_at,
+            b.workspace_id
+       FROM task_items i
+       JOIN task_groups g ON g.id = i.group_id
+       JOIN task_boards b ON b.id = g.board_id
+      WHERE i.id = ANY($1::uuid[])`,
+    [itemIds]
+  );
+  return rows;
+}
+
+// Validate every unique workspace the items touch is one the caller can reach.
+async function assertBulkWorkspaceAccess({ effRole, userId, items }) {
+  const workspaceIds = [...new Set(items.map((i) => i.workspace_id))];
+  for (const wsId of workspaceIds) {
+    // eslint-disable-next-line no-await-in-loop
+    const ok = await assertWorkspaceAccess({ effRole, userId, workspaceId: wsId });
+    if (!ok) return false;
+  }
+  return true;
+}
+
+router.post('/items/bulk-status', async (req, res) => {
+  const eff = getEffectiveRole(req);
+  const userId = req.user.id;
+  try {
+    const payload = itemBulkStatusSchema.parse(req.body);
+    const { item_ids, status } = payload;
+
+    const items = await loadItemsForBulk(item_ids);
+    const foundIds = new Set(items.map((i) => i.id));
+    const missing = item_ids.filter((id) => !foundIds.has(id));
+    if (missing.length) return res.status(404).json({ message: 'One or more items not found', missing });
+
+    const archived = items.filter((i) => i.archived_at).map((i) => i.id);
+    if (archived.length) return res.status(400).json({ message: 'One or more items are archived', archived });
+
+    const wsOk = await assertBulkWorkspaceAccess({ effRole: eff, userId, items });
+    if (!wsOk) return res.status(403).json({ message: 'Insufficient permissions' });
+
+    const db = await getClient();
+    let updated;
+    try {
+      await db.query('BEGIN');
+      const { rows } = await db.query(
+        `UPDATE task_items
+            SET status = $2, updated_at = NOW()
+          WHERE id = ANY($1::uuid[])
+        RETURNING id, status, name, board_id, group_id`,
+        [item_ids, status]
+      );
+      updated = rows;
+      await db.query('COMMIT');
+    } catch (txErr) {
+      try { await db.query('ROLLBACK'); } catch { /* noop */ }
+      throw txErr;
+    } finally {
+      db.release();
+    }
+
+    const beforeById = new Map(items.map((i) => [i.id, i]));
+    const changed = updated.filter((a) => beforeById.get(a.id)?.status !== a.status);
+
+    for (const after of changed) {
+      const before = beforeById.get(after.id);
+      emitTaskEvent({
+        event_type: 'item.status_changed',
+        workspace_id: before.workspace_id,
+        board_id: before.board_id,
+        item_id: after.id,
+        entity_type: 'item',
+        entity_id: after.id,
+        actor_id: userId,
+        old_value: { status: before.status, name: before.name },
+        new_value: { status: after.status, name: after.name },
+        metadata: { bulk: true }
+      });
+      // eslint-disable-next-line no-await-in-loop
+      const isDone = await isDoneStatus(after.status, after.board_id);
+      // eslint-disable-next-line no-await-in-loop
+      const wasDone = await isDoneStatus(before.status, before.board_id);
+      if (isDone && !wasDone) {
+        emitTaskEvent({
+          event_type: 'item.completed',
+          workspace_id: before.workspace_id,
+          board_id: before.board_id,
+          item_id: after.id,
+          entity_type: 'item',
+          entity_id: after.id,
+          actor_id: userId,
+          old_value: { status: before.status, name: before.name },
+          new_value: { status: after.status, name: after.name },
+          metadata: { is_done_state: true, bulk: true }
+        });
+      }
+      if (!EVENT_BUS_ENABLED) {
+        const actionType = isDone && !wasDone
+          ? ActivityEventTypes.COMPLETE_TASK
+          : ActivityEventTypes.UPDATE_TASK;
+        // eslint-disable-next-line no-await-in-loop
+        await logTaskActivity({
+          userId,
+          actionType,
+          taskId: after.id,
+          taskName: after.name,
+          ipAddress: req.ip,
+          userAgent: req.headers['user-agent'],
+          details: { statusChanged: true, newStatus: after.status, bulk: true }
+        });
+      }
+    }
+
+    return res.json({
+      data: {
+        updated_count: changed.length,
+        updated_ids: changed.map((r) => r.id)
+      }
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ message: err.issues[0]?.message || 'Invalid payload' });
+    console.error('[tasks:items:bulk-status]', err);
+    return res.status(500).json({ message: 'Unable to update items' });
+  }
+});
+
+router.post('/items/bulk-labels', async (req, res) => {
+  const eff = getEffectiveRole(req);
+  const userId = req.user.id;
+  try {
+    const payload = itemBulkLabelSchema.parse(req.body);
+    const { item_ids, label_id, action } = payload;
+
+    const { rows: labelDef } = await query('SELECT * FROM task_label_definitions WHERE id = $1', [label_id]);
+    if (!labelDef.length) return res.status(404).json({ message: 'Label not found' });
+    const lbl = labelDef[0];
+
+    const items = await loadItemsForBulk(item_ids);
+    const foundIds = new Set(items.map((i) => i.id));
+    const missing = item_ids.filter((id) => !foundIds.has(id));
+    if (missing.length) return res.status(404).json({ message: 'One or more items not found', missing });
+
+    const archived = items.filter((i) => i.archived_at).map((i) => i.id);
+    if (archived.length) return res.status(400).json({ message: 'One or more items are archived', archived });
+
+    const wsOk = await assertBulkWorkspaceAccess({ effRole: eff, userId, items });
+    if (!wsOk) return res.status(403).json({ message: 'Insufficient permissions' });
+
+    // A workspace-scoped label can only be applied to items in that workspace.
+    // Global labels (workspace_id IS NULL) are valid everywhere.
+    if (lbl.workspace_id) {
+      const wrongWs = items.filter((i) => i.workspace_id !== lbl.workspace_id).map((i) => i.id);
+      if (wrongWs.length) {
+        return res.status(400).json({ message: "Label does not belong to the items' workspace", items: wrongWs });
+      }
+    }
+
+    const db = await getClient();
+    let mutatedIds;
+    try {
+      await db.query('BEGIN');
+      if (action === 'add') {
+        if (lbl.is_exclusive) {
+          // Categories are scoped per workspace, so clear existing category
+          // labels only in the label's workspace (or all workspaces if global).
+          if (lbl.workspace_id) {
+            await db.query(
+              `DELETE FROM task_item_labels
+                WHERE item_id = ANY($1::uuid[])
+                  AND label_id IN (
+                    SELECT id FROM task_label_definitions
+                     WHERE workspace_id = $2 AND category = $3
+                  )`,
+              [item_ids, lbl.workspace_id, lbl.category]
+            );
+          } else {
+            await db.query(
+              `DELETE FROM task_item_labels
+                WHERE item_id = ANY($1::uuid[])
+                  AND label_id IN (
+                    SELECT id FROM task_label_definitions
+                     WHERE workspace_id IS NULL AND category = $2
+                  )`,
+              [item_ids, lbl.category]
+            );
+          }
+        }
+        const { rows } = await db.query(
+          `INSERT INTO task_item_labels (item_id, label_id, applied_by)
+           SELECT ids.id, $2, $3 FROM UNNEST($1::uuid[]) AS ids(id)
+           ON CONFLICT (item_id, label_id) DO NOTHING
+           RETURNING item_id`,
+          [item_ids, label_id, userId]
+        );
+        mutatedIds = rows.map((r) => r.item_id);
+      } else {
+        const { rows } = await db.query(
+          `DELETE FROM task_item_labels
+            WHERE item_id = ANY($1::uuid[]) AND label_id = $2
+           RETURNING item_id`,
+          [item_ids, label_id]
+        );
+        mutatedIds = rows.map((r) => r.item_id);
+      }
+      await db.query('COMMIT');
+    } catch (txErr) {
+      try { await db.query('ROLLBACK'); } catch { /* noop */ }
+      throw txErr;
+    } finally {
+      db.release();
+    }
+
+    const mutatedSet = new Set(mutatedIds);
+    for (const item of items) {
+      if (!mutatedSet.has(item.id)) continue;
+      emitTaskEvent({
+        event_type: action === 'add' ? 'label.added' : 'label.removed',
+        entity_type: 'item_label',
+        entity_id: item.id,
+        actor_id: userId,
+        workspace_id: item.workspace_id,
+        board_id: item.board_id,
+        item_id: item.id,
+        old_value: action === 'add' ? null : { label_id: lbl.id, category: lbl.category, label: lbl.label },
+        new_value: action === 'add' ? { label_id: lbl.id, category: lbl.category, label: lbl.label } : null,
+        metadata: { label_definition: lbl, bulk: true }
+      });
+    }
+
+    return res.json({
+      data: {
+        updated_count: mutatedIds.length,
+        updated_ids: mutatedIds
+      }
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ message: err.issues[0]?.message || 'Invalid payload' });
+    console.error('[tasks:items:bulk-labels]', err);
+    return res.status(500).json({ message: 'Unable to update labels' });
+  }
+});
+
+router.post('/items/bulk-assignees', async (req, res) => {
+  const eff = getEffectiveRole(req);
+  const userId = req.user.id;
+  try {
+    const payload = itemBulkAssigneeSchema.parse(req.body);
+    const { item_ids, user_id: targetUserId, action } = payload;
+
+    const items = await loadItemsForBulk(item_ids);
+    const foundIds = new Set(items.map((i) => i.id));
+    const missing = item_ids.filter((id) => !foundIds.has(id));
+    if (missing.length) return res.status(404).json({ message: 'One or more items not found', missing });
+
+    const archived = items.filter((i) => i.archived_at).map((i) => i.id);
+    if (archived.length) return res.status(400).json({ message: 'One or more items are archived', archived });
+
+    const wsOk = await assertBulkWorkspaceAccess({ effRole: eff, userId, items });
+    if (!wsOk) return res.status(403).json({ message: 'Insufficient permissions' });
+
+    // For adds, the target user must exist and have access to every affected
+    // workspace. Skip this check on removes so admins can clean up assignments
+    // for users whose access was later revoked.
+    if (action === 'add') {
+      const { rows: userRows } = await query('SELECT id, role FROM users WHERE id = $1 LIMIT 1', [targetUserId]);
+      if (!userRows.length) return res.status(404).json({ message: 'User not found' });
+      const workspaceIds = [...new Set(items.map((i) => i.workspace_id))];
+      for (const wsId of workspaceIds) {
+        // eslint-disable-next-line no-await-in-loop
+        const okTarget = await assertWorkspaceAccess({ effRole: userRows[0].role, userId: targetUserId, workspaceId: wsId });
+        if (!okTarget) return res.status(403).json({ message: 'User does not have workspace access' });
+      }
+    }
+
+    const db = await getClient();
+    let mutatedIds;
+    try {
+      await db.query('BEGIN');
+      if (action === 'add') {
+        const { rows } = await db.query(
+          `INSERT INTO task_item_assignees (item_id, user_id)
+           SELECT ids.id, $2 FROM UNNEST($1::uuid[]) AS ids(id)
+           ON CONFLICT (item_id, user_id) DO NOTHING
+           RETURNING item_id`,
+          [item_ids, targetUserId]
+        );
+        mutatedIds = rows.map((r) => r.item_id);
+      } else {
+        const { rows } = await db.query(
+          `DELETE FROM task_item_assignees
+            WHERE item_id = ANY($1::uuid[]) AND user_id = $2
+           RETURNING item_id`,
+          [item_ids, targetUserId]
+        );
+        mutatedIds = rows.map((r) => r.item_id);
+      }
+      await db.query('COMMIT');
+    } catch (txErr) {
+      try { await db.query('ROLLBACK'); } catch { /* noop */ }
+      throw txErr;
+    } finally {
+      db.release();
+    }
+
+    const mutatedSet = new Set(mutatedIds);
+    for (const item of items) {
+      if (!mutatedSet.has(item.id)) continue;
+      emitTaskEvent({
+        event_type: action === 'add' ? 'assignee.added' : 'assignee.removed',
+        workspace_id: item.workspace_id,
+        board_id: item.board_id,
+        item_id: item.id,
+        entity_type: 'assignee',
+        entity_id: targetUserId,
+        actor_id: userId,
+        old_value: action === 'remove' ? { user_id: targetUserId } : undefined,
+        new_value: action === 'add' ? { user_id: targetUserId } : undefined,
+        metadata: { bulk: true }
+      });
+    }
+
+    return res.json({
+      data: {
+        updated_count: mutatedIds.length,
+        updated_ids: mutatedIds
+      }
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ message: err.issues[0]?.message || 'Invalid payload' });
+    console.error('[tasks:items:bulk-assignees]', err);
+    return res.status(500).json({ message: 'Unable to update assignees' });
+  }
+});
+
+router.post('/items/bulk-archive', async (req, res) => {
+  const eff = getEffectiveRole(req);
+  const userId = req.user.id;
+  try {
+    const payload = itemBulkArchiveSchema.parse(req.body);
+    const { item_ids } = payload;
+
+    const items = await loadItemsForBulk(item_ids);
+    const foundIds = new Set(items.map((i) => i.id));
+    const missing = item_ids.filter((id) => !foundIds.has(id));
+    if (missing.length) return res.status(404).json({ message: 'One or more items not found', missing });
+
+    const wsOk = await assertBulkWorkspaceAccess({ effRole: eff, userId, items });
+    if (!wsOk) return res.status(403).json({ message: 'Insufficient permissions' });
+
+    // Silently skip already-archived rows so re-clicking archive on a mixed
+    // selection is idempotent instead of erroring.
+    const activeItems = items.filter((i) => !i.archived_at);
+    if (!activeItems.length) return res.json({ data: { updated_count: 0, updated_ids: [] } });
+    const activeIds = activeItems.map((i) => i.id);
+
+    const db = await getClient();
+    let archivedIds;
+    try {
+      await db.query('BEGIN');
+      const { rows } = await db.query(
+        `UPDATE task_items
+            SET archived_at = COALESCE(archived_at, NOW()),
+                archived_by = COALESCE(archived_by, $2),
+                updated_at = NOW()
+          WHERE id = ANY($1::uuid[]) AND archived_at IS NULL
+        RETURNING id`,
+        [activeIds, userId]
+      );
+      archivedIds = rows.map((r) => r.id);
+      await db.query('COMMIT');
+    } catch (txErr) {
+      try { await db.query('ROLLBACK'); } catch { /* noop */ }
+      throw txErr;
+    } finally {
+      db.release();
+    }
+
+    const archivedSet = new Set(archivedIds);
+    for (const item of items) {
+      if (!archivedSet.has(item.id)) continue;
+      emitTaskEvent({
+        event_type: 'item.archived',
+        workspace_id: item.workspace_id,
+        board_id: item.board_id,
+        item_id: item.id,
+        entity_type: 'item',
+        entity_id: item.id,
+        actor_id: userId,
+        old_value: { name: item.name },
+        metadata: { bulk: true }
+      });
+      if (!EVENT_BUS_ENABLED) {
+        // eslint-disable-next-line no-await-in-loop
+        await logTaskActivity({
+          userId,
+          actionType: ActivityEventTypes.DELETE_TASK,
+          taskId: item.id,
+          taskName: item.name,
+          ipAddress: req.ip,
+          userAgent: req.headers['user-agent'],
+          details: { bulk: true }
+        });
+      }
+    }
+
+    return res.json({
+      data: {
+        updated_count: archivedIds.length,
+        updated_ids: archivedIds
+      }
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ message: err.issues[0]?.message || 'Invalid payload' });
+    console.error('[tasks:items:bulk-archive]', err);
+    return res.status(500).json({ message: 'Unable to archive items' });
+  }
+});
+
 // Automations (board-scoped)
 router.get('/boards/:boardId/automations', async (req, res) => {
   const eff = getEffectiveRole(req);
